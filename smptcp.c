@@ -3,6 +3,7 @@
 int main(int argc, char *argv[])
 {
 	opterr = 0;
+	transfer_sig = 0;
 	int32_t ret = 0;
 	int32_t status;
 	int32_t i;
@@ -35,8 +36,16 @@ int main(int argc, char *argv[])
 	// struct mptcp_header recv_req_header;
 	struct packet send_req_packet;
 	struct packet recv_req_packet;
+	byte_stats_t *send_stats;
 	arg_t *args;
 	ret_t *rets;
+
+	/*
+		initial configuration
+	*/
+
+	pthread_mutex_init(&transfer_l, NULL);
+	pthread_mutex_lock(&transfer_l);
 
 	/*
 		parse through user input
@@ -236,6 +245,7 @@ int main(int argc, char *argv[])
 	*/
 
 	//begin receiving port numbers
+	mptcp_sock_hndls = (int32_t *)malloc(num_interfaces*sizeof(int32_t));
 	mptcp_thread_ids = (pthread_t *)malloc(num_interfaces*sizeof(pthread_t));
 	for(i = 0; i < num_interfaces; i++)
 	{
@@ -244,6 +254,10 @@ int main(int argc, char *argv[])
 		{
 			fprintf(stderr, "%s did not receive full packet size from server during interface request phase (bytes: %d/%d)\n", 
 				err_m, status, MSS);
+			
+			free(mptcp_sock_hndls);
+			free(mptcp_thread_ids);
+
 			return 1;
 		}
 
@@ -261,18 +275,61 @@ int main(int argc, char *argv[])
 		{
 			fprintf(stderr, "%s failed to spawn a data channel thread (errno[%d]: %s)\n", 
 				err_m, errno, strerror(errno));
+			
+			free(mptcp_sock_hndls);
+			free(mptcp_thread_ids);
+
 			return 1;
 		}
 	}
+
+	//wait for end-of-transmission to be signaled
+	pthread_mutex_lock(&transfer_l);
 
 	/*
 		detect file transmission completion, resync threads, check for any errors
 	*/
 
+	//transmission completed succesfully
+	if(transfer_sig == 1)
+	{
+		send_stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
+
+		//joining threads, get back data transfer statistics
+		for(i = 0; i < num_interfaces; i++)
+		{
+			fflush(stdout);
+			status = pthread_join(mptcp_thread_ids[i], (void **)&rets);
+			send_stats->bytes_sent = rets->stats.bytes_sent;
+			send_stats->bytes_dropped = rets->stats.bytes_dropped;
+			send_stats->bytes_resent = rets->stats.bytes_resent;
+			free(rets);
+		}
+	}
+	else
+	{
+		//close sockets and cancel threads
+		for(i = 0; i < num_interfaces; i++)
+		{
+			close(mptcp_sock_hndls[i]);
+			fflush(stdout);
+			pthread_cancel(mptcp_thread_ids[i]);
+		}
+
+		free(mptcp_sock_hndls);
+		free(mptcp_thread_ids);
+
+		return 1;
+	}
+
 
 	/*
 		cleanup and return
 	*/
+
+	free(mptcp_sock_hndls);
+	free(mptcp_thread_ids);
+	free(send_stats);
 
 	return ret;
 }
