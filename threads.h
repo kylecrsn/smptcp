@@ -19,13 +19,28 @@
 #include "mptcp.h"
 
 /*structs*/
+typedef struct arg_t
+{
+	int32_t port;
+	char *filename;
+	struct sockaddr_in serv_addr;
+	struct sockaddr_in clnt_addr;
+	socklen_t serv_addr_len;
+	socklen_t clnt_addr_len;
+}arg_t;
+typedef struct ret_t
+{
+	int32_t bytes_sent;
+	int32_t bytes_dropped;
+	int32_t bytes_resent;
+	int32_t ret;
+}ret_t;
 
 /*variables*/
 char *err_m;
 
 /*functions*/
-void *send_thread(void *arg);
-void *recv_thread(void *arg);
+void *mptcp_thread(void *arg);
 
 #endif
 

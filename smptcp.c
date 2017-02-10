@@ -5,6 +5,7 @@ int main(int argc, char *argv[])
 	opterr = 0;
 	int32_t ret = 0;
 	int32_t status;
+	int32_t i;
 	int32_t c;
 	int32_t serv_sock_fd;
 	int32_t num_interfaces;
@@ -20,12 +21,22 @@ int main(int argc, char *argv[])
 	char *end;
 	char hostname[INET_ADDRSTRLEN];
 	char *filename;
+	char msg_buf[MSS];
 	struct addrinfo hints;
 	struct addrinfo *serv_info;
 	struct addrinfo *s;
 	struct sockaddr_in *serv_addr_name = NULL;
 	struct sockaddr_in serv_addr;
+	struct sockaddr_in clnt_addr;
 	socklen_t serv_addr_len;
+	socklen_t clnt_addr_len;
+	pthread_t *mptcp_thread_ids;
+	struct mptcp_header send_req_header;
+	// struct mptcp_header recv_req_header;
+	struct packet send_req_packet;
+	struct packet recv_req_packet;
+	arg_t *args;
+	ret_t *rets;
 
 	/*
 		parse through user input
@@ -168,6 +179,13 @@ int main(int argc, char *argv[])
 	inet_pton(AF_INET, hostname, &(serv_addr.sin_addr));
 	serv_addr.sin_port = htons(port);
 
+	//setup client sockaddr_in object
+	clnt_addr_len = sizeof(clnt_addr);
+	memset((char *)&clnt_addr, 0, clnt_addr_len);
+	clnt_addr.sin_family = AF_INET;
+	inet_pton(AF_INET, INADDR_ANY, &(clnt_addr.sin_addr));
+	clnt_addr.sin_port = htons(0);
+
 	//open a client socket
 	status = mp_socket(AF_INET, SOCK_MPTCP, IPPROTO_TCP);
 	if(status < 0)
@@ -191,31 +209,69 @@ int main(int argc, char *argv[])
 		send request for num_interface ports to server
 	*/
 
+	//assemble request packet header
+	send_req_header.dest_addr = serv_addr;
+	send_req_header.src_addr = clnt_addr;
+	send_req_header.seq_num = 0;
+	send_req_header.ack_num = 0;
+	send_req_header.total_bytes = 0;
 
+	//assemble request packet
+	memset(msg_buf, 0, MSS);
+	send_req_packet.header = &send_req_header;
+	sprintf(msg_buf, "%d", num_interfaces);
+	send_req_packet.data = msg_buf;
 
+	//send packet to server
+	status = mp_send(serv_sock_fd, &send_req_packet, MSS, 0);
+	if(status != MSS)
+	{
+		fprintf(stderr, "%s did not send full packet size to server during interface request phase (bytes: %d/%d)\n", 
+				err_m, status, MSS);
+		return 1;
+	}
 
 	/*
-		recv response for num_interface ports from server
+		recv response for num_interface ports from server, create threads for each port
+	*/
+
+	//begin receiving port numbers
+	mptcp_thread_ids = (pthread_t *)malloc(num_interfaces*sizeof(pthread_t));
+	for(i = 0; i < num_interfaces; i++)
+	{
+		status = mp_recv(serv_sock_fd, &recv_req_packet, MSS, 0);
+		if(status != MSS)
+		{
+			fprintf(stderr, "%s did not receive full packet size from server during interface request phase (bytes: %d/%d)\n", 
+				err_m, status, MSS);
+			return 1;
+		}
+
+		//spawn data channel thread with new port number
+		args = (arg_t *)malloc(sizeof(arg_t));
+		args->port = strtol(recv_req_packet.data, &end, 10);
+		args->filename = filename;
+		args->serv_addr = serv_addr;
+		args->clnt_addr = clnt_addr;
+		args->serv_addr_len = serv_addr_len;
+		args->clnt_addr_len = clnt_addr_len;
+		fflush(stdout);
+		status = pthread_create(&(mptcp_thread_ids[i]), NULL, mptcp_thread, (void *)args);
+		if(status)
+		{
+			fprintf(stderr, "%s failed to spawn a data channel thread (errno[%d]: %s)\n", 
+				err_m, errno, strerror(errno));
+			return 1;
+		}
+	}
+
+	/*
+		detect file transmission completion, resync threads, check for any errors
 	*/
 
 
 	/*
-		open threads for each port number
-	*/
-
-
-	/*
-		detect file transmission completion
-	*/
-
-
-	/*
-		resync threads, check for any errors
-	*/
-
-
-	/*
-		finish
+		cleanup and return
 	*/
 
 	return ret;
