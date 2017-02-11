@@ -8,12 +8,14 @@ int main(int argc, char *argv[])
 	int32_t status;
 	int32_t i;
 	int32_t c;
+	int32_t fd;
 	int32_t serv_sock_fd;
+	int32_t file_size;
 	int32_t num_interfaces;
 	int32_t port;
 	long num_interfaces_l;
 	long port_l;
-	err_m = "internal error: ";
+	err_m = "internal error:";
 	char *n_value = NULL;
 	char *h_value = NULL;
 	char *p_value = NULL;
@@ -23,6 +25,7 @@ int main(int argc, char *argv[])
 	char hostname[INET_ADDRSTRLEN];
 	char *filename;
 	char msg_buf[MSS];
+	struct flock *fl;
 	struct addrinfo hints;
 	struct addrinfo *serv_info;
 	struct addrinfo *s;
@@ -33,7 +36,6 @@ int main(int argc, char *argv[])
 	socklen_t clnt_addr_len;
 	pthread_t *mptcp_thread_ids;
 	struct mptcp_header send_req_header;
-	// struct mptcp_header recv_req_header;
 	struct packet send_req_packet;
 	struct packet recv_req_packet;
 	byte_stats_t *send_stats;
@@ -177,6 +179,19 @@ int main(int argc, char *argv[])
 	}
 	filename = f_value;
 
+	//open and lock the file, get its size
+	fd = open(filename, O_RDONLY);
+	fl = lock_fd(fd);
+	if(fl == NULL)
+	{
+		return 1;
+	}
+	file_size = get_fsize(filename);
+	if(file_size == -1)
+	{
+		return 1;
+	}
+
 	/*
 		esatblish initial connection with server
 	*/
@@ -195,7 +210,7 @@ int main(int argc, char *argv[])
 	inet_pton(AF_INET, INADDR_ANY, &(clnt_addr.sin_addr));
 	clnt_addr.sin_port = htons(0);
 
-	//open a client socket
+	//open a socket
 	status = mp_socket(AF_INET, SOCK_MPTCP, IPPROTO_TCP);
 	if(status < 0)
 	{
@@ -241,7 +256,7 @@ int main(int argc, char *argv[])
 	}
 
 	/*
-		recv response for num_interface ports from server, create threads for each port
+		recv response for num_interface ports from server, create a thread for each port
 	*/
 
 	//begin receiving port numbers
@@ -261,8 +276,11 @@ int main(int argc, char *argv[])
 			return 1;
 		}
 
-		//spawn data channel thread with new port number
+		//spawn data channel threads with new port number
 		args = (arg_t *)malloc(sizeof(arg_t));
+		args->channel_id = i;
+		args->channel_ct = num_interfaces;
+		args->file_size = file_size;
 		args->port = strtol(recv_req_packet.data, &end, 10);
 		args->filename = filename;
 		args->serv_addr = serv_addr;
@@ -290,19 +308,22 @@ int main(int argc, char *argv[])
 		detect file transmission completion, resync threads, check for any errors
 	*/
 
-	//transmission completed succesfully
+	//transmission completed succesfully, print statistics after handling threads
 	if(transfer_sig == 1)
 	{
-		send_stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
+		send_stats = (byte_stats_t *)malloc((num_interfaces+1)*sizeof(byte_stats_t));
 
 		//joining threads, get back data transfer statistics
 		for(i = 0; i < num_interfaces; i++)
 		{
 			fflush(stdout);
 			status = pthread_join(mptcp_thread_ids[i], (void **)&rets);
-			send_stats->bytes_sent = rets->stats.bytes_sent;
-			send_stats->bytes_dropped = rets->stats.bytes_dropped;
-			send_stats->bytes_resent = rets->stats.bytes_resent;
+			send_stats[i].bytes_sent = rets->stats.bytes_sent;
+			send_stats[num_interfaces].bytes_sent += rets->stats.bytes_sent;
+			send_stats[i].bytes_dropped = rets->stats.bytes_dropped;
+			send_stats[num_interfaces].bytes_dropped += rets->stats.bytes_dropped;
+			send_stats[i].bytes_resent = rets->stats.bytes_resent;
+			send_stats[num_interfaces].bytes_resent += rets->stats.bytes_resent;
 			free(rets);
 		}
 	}
@@ -321,12 +342,24 @@ int main(int argc, char *argv[])
 
 		return 1;
 	}
-
+	fprintf(stdout, "\nData Transfer Statistics\n================\n");
+	fprintf(stdout, "- Total Bytes Sent: %d\n", send_stats[num_interfaces].bytes_sent);
+	fprintf(stdout, "- Total Bytes Dropped: %d\n", send_stats[num_interfaces].bytes_dropped);
+	fprintf(stdout, "- Total Bytes Resent: %d\n\n", send_stats[num_interfaces].bytes_resent);
+	for(i = 0; i < num_interfaces; i++)
+	{
+		fprintf(stdout, "Data Channel %d\n=============\n", i);
+		fprintf(stdout, "- Bytes Sent: %d\n", send_stats[i].bytes_sent);
+		fprintf(stdout, "- Bytes Dropped: %d\n", send_stats[i].bytes_dropped);
+		fprintf(stdout, "- Bytes Resent: %d\n\n", send_stats[i].bytes_resent);
+	}
 
 	/*
 		cleanup and return
 	*/
 
+	unlock_fd(fd, fl);
+	close(fd);
 	free(mptcp_sock_hndls);
 	free(mptcp_thread_ids);
 	free(send_stats);

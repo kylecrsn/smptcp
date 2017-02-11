@@ -5,7 +5,7 @@ LIBS = -pthread
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
 TARGET = mptcp
-OBJECTS = $(patsubst %.c, %.o, $(wildcard *.c))
+OBJECTS = $(patsubst %.c,%.o,$(wildcard *.c))
 HEADERS = $(wildcard *.h)
 
 .PHONY: default all clean
