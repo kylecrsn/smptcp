@@ -49,3 +49,21 @@ int32_t get_fsize(char *fn)
 				err_m);
 	return -1;
 }
+
+void write_packet(struct packet pkt)
+{
+	char tmp[INET_ADDRSTRLEN];
+
+	fprintf(stdout, "<---------- PACKET START ---------->\n");
+	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
+	fprintf(stdout, "dest_addr   : %s\n", tmp);
+	fprintf(stdout, "dest_port   : %d\n", ntohs((*pkt.header).dest_addr.sin_port));
+	inet_ntop((*pkt.header).src_addr.sin_family, &((*pkt.header).src_addr.sin_addr), tmp, INET_ADDRSTRLEN);
+	fprintf(stdout, "src_addr    : %s\n", tmp);
+	fprintf(stdout, "src_port    : %d\n", ntohs((*pkt.header).src_addr.sin_port));
+	fprintf(stdout, "seq_num     : %d\n", (*pkt.header).seq_num);
+	fprintf(stdout, "ack_num     : %d\n", (*pkt.header).ack_num);
+	fprintf(stdout, "total_bytes : %d\n", (*pkt.header).total_bytes);
+	fprintf(stdout, "data        : %s\n", pkt.data);
+	fprintf(stdout, "<----------- PACKET END ----------->\n\n");
+}

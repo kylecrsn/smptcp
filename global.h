@@ -28,14 +28,17 @@ typedef struct byte_stats_t
 }byte_stats_t;
 
 /*variables*/
+const char *MPREQ;
+const char *MPOK;
 int32_t *mptcp_sock_hndls;
-int32_t transfer_sig;
+int32_t transmission_end_sig;
 char *err_m;
-pthread_mutex_t transfer_l;
+pthread_mutex_t transmission_end_l;
 
 /*functions*/
 struct flock *lock_fd(int32_t fd);
 int32_t unlock_fd(int32_t fd, struct flock *fl);
 int32_t get_fsize(char *fn);
+void write_packet(struct packet pkt);
 
 #endif

@@ -9,11 +9,12 @@ void *mptcp_thread(void *arg)
 	int32_t file_size;
 	int32_t port;
 	char *filename;
+	char *hostname;
 	struct sockaddr_in serv_addr;
 	struct sockaddr_in clnt_addr;
 	socklen_t serv_addr_len;
 	socklen_t clnt_addr_len;
-	arg_t *args = (arg_t *)args;
+	arg_t *args = (arg_t *)arg;
 	ret_t *rets = (ret_t *)malloc(sizeof(ret_t));
 
 	/*
@@ -27,10 +28,7 @@ void *mptcp_thread(void *arg)
 	file_size = args->file_size;
 	port = args->port;
 	filename = args->filename;
-	serv_addr = args->serv_addr;
-	clnt_addr = args->clnt_addr;
-	serv_addr_len = args->serv_addr_len;
-	clnt_addr_len = args->clnt_addr_len;
+	hostname = args->hostname;
 	free(args);
 
 	//initialize rets
@@ -42,8 +40,19 @@ void *mptcp_thread(void *arg)
 		esatblish connection with server
 	*/
 
-	//adjust server sockaddr_in object to point to the new port
+	//setup server sockaddr_in object
+	serv_addr_len = sizeof(serv_addr);
+	memset((char *)&serv_addr, 0, serv_addr_len);
+	serv_addr.sin_family = AF_INET;
+	inet_pton(AF_INET, hostname, &(serv_addr.sin_addr));
 	serv_addr.sin_port = htons(port);
+
+	//setup client sockaddr_in object
+	clnt_addr_len = sizeof(clnt_addr);
+	memset((char *)&clnt_addr, 0, clnt_addr_len);
+	clnt_addr.sin_family = AF_INET;
+	inet_pton(AF_INET, "127.0.0.1", &(clnt_addr.sin_addr));
+	clnt_addr.sin_port = htons(0);
 
 	//open a socket for the data channel
 	status = mp_socket(AF_INET, SOCK_MPTCP, IPPROTO_TCP);
@@ -51,7 +60,7 @@ void *mptcp_thread(void *arg)
 	{
 		fprintf(stderr, "%s failed to open a socket for data channel %d (errno[%d]: %s)\n", 
 				err_m, channel_id, errno, strerror(errno));
-		pthread_mutex_unlock(&transfer_l);
+		pthread_mutex_unlock(&transmission_end_l);
 		pthread_exit((void *)rets);
 	}
 	serv_sock_fd = status;
@@ -62,7 +71,7 @@ void *mptcp_thread(void *arg)
 	{
 		fprintf(stderr, "%s failed to establish connection with the server on data channel %d (errno[%d]: %s)\n", 
 				err_m, channel_id, errno, strerror(errno));
-		pthread_mutex_unlock(&transfer_l);
+		pthread_mutex_unlock(&transmission_end_l);
 		pthread_exit((void *)rets);
 	}
 
@@ -70,7 +79,8 @@ void *mptcp_thread(void *arg)
 		send data packets to server
 	*/
 
-	while(transfer_sig == 0)
+	fprintf(stdout, "Channel %d entering loop...\n", channel_id);
+	while(transmission_end_sig == 0)
 	{
 
 	}

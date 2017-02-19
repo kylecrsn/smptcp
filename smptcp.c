@@ -3,7 +3,8 @@
 int main(int argc, char *argv[])
 {
 	opterr = 0;
-	transfer_sig = 0;
+	transmission_end_sig = 0;
+	int32_t *given_ports;
 	int32_t ret = 0;
 	int32_t status;
 	int32_t i;
@@ -16,14 +17,19 @@ int main(int argc, char *argv[])
 	long num_interfaces_l;
 	long port_l;
 	err_m = "internal error:";
+	MPREQ = "MPREQ";
+	MPOK = "MPOK";
 	char *n_value = NULL;
 	char *h_value = NULL;
 	char *p_value = NULL;
 	char *f_value = NULL;
+	char *data_stub = NULL;
+	char *toks = " :";
 	char *usage = "invalid or missing options\nusage: ./mptcp [-n num_interfaces] [-h hostname] [-p port] [-f filename]\n";
 	char *end;
-	char hostname[INET_ADDRSTRLEN];
 	char *filename;
+	char *recv_req_data;
+	char hostname[INET_ADDRSTRLEN];
 	char msg_buf[MSS];
 	struct flock *fl;
 	struct addrinfo hints;
@@ -36,8 +42,9 @@ int main(int argc, char *argv[])
 	socklen_t clnt_addr_len;
 	pthread_t *mptcp_thread_ids;
 	struct mptcp_header send_req_header;
+	struct mptcp_header *recv_req_header;
 	struct packet send_req_packet;
-	struct packet recv_req_packet;
+	struct packet *recv_req_packet;
 	byte_stats_t *send_stats;
 	arg_t *args;
 	ret_t *rets;
@@ -46,8 +53,8 @@ int main(int argc, char *argv[])
 		initial configuration
 	*/
 
-	pthread_mutex_init(&transfer_l, NULL);
-	pthread_mutex_lock(&transfer_l);
+	pthread_mutex_init(&transmission_end_l, NULL);
+	pthread_mutex_lock(&transmission_end_l);
 
 	/*
 		parse through user input
@@ -122,7 +129,7 @@ int main(int argc, char *argv[])
 	//make sure the num_interfaces is specified correctly/within range
 	errno = 0;
 	num_interfaces_l = strtol(n_value, &end, 10);
-	if(*end != 0 || errno != 0 || num_interfaces_l < 0 || num_interfaces_l > 1023)
+	if(*end != 0 || errno != 0 || num_interfaces_l < 1 || num_interfaces_l > 16)
 	{
 		fprintf(stdout, "%s", usage);
 		return 1;
@@ -207,7 +214,7 @@ int main(int argc, char *argv[])
 	clnt_addr_len = sizeof(clnt_addr);
 	memset((char *)&clnt_addr, 0, clnt_addr_len);
 	clnt_addr.sin_family = AF_INET;
-	inet_pton(AF_INET, INADDR_ANY, &(clnt_addr.sin_addr));
+	inet_pton(AF_INET, "127.0.0.1", &(clnt_addr.sin_addr));
 	clnt_addr.sin_port = htons(0);
 
 	//open a socket
@@ -236,15 +243,15 @@ int main(int argc, char *argv[])
 	//assemble request packet header
 	send_req_header.dest_addr = serv_addr;
 	send_req_header.src_addr = clnt_addr;
-	send_req_header.seq_num = 0;
+	send_req_header.seq_num = 1;
 	send_req_header.ack_num = 0;
-	send_req_header.total_bytes = 0;
 
 	//assemble request packet
 	memset(msg_buf, 0, MSS);
+	send_req_header.total_bytes = sprintf(msg_buf, "%s %d", MPREQ, num_interfaces);
 	send_req_packet.header = &send_req_header;
-	sprintf(msg_buf, "%d", num_interfaces);
 	send_req_packet.data = msg_buf;
+	write_packet(send_req_packet);
 
 	//send packet to server
 	status = mp_send(serv_sock_fd, &send_req_packet, MSS, 0);
@@ -259,34 +266,62 @@ int main(int argc, char *argv[])
 		recv response for num_interface ports from server, create a thread for each port
 	*/
 
-	//begin receiving port numbers
+	//recv response packet from server
+	recv_req_packet = (struct packet *)malloc(sizeof(struct packet));
+	recv_req_header = (struct mptcp_header *)malloc(sizeof(struct mptcp_header));
+	recv_req_data = (char *)malloc(MSS*sizeof(char));
+	recv_req_packet->header = recv_req_header;
+	recv_req_packet->data = recv_req_data;
+	status = mp_recv(serv_sock_fd, recv_req_packet, MSS, 0);
+	write_packet(*recv_req_packet);
+	if((*recv_req_packet->header).ack_num == -1)
+	{
+		fprintf(stderr, "%s did not receive full packet size from server during interface request phase (bytes: %d/%d)\n", 
+			err_m, status, MSS);
+
+		free(recv_req_packet);
+		free(recv_req_header);
+		free(recv_req_data);
+
+		return 1;
+	}
+
+	//parse response data into an array of port values
+	data_stub = strtok(recv_req_packet->data, toks);
+	if(strcmp(data_stub, MPOK) != 0)
+	{
+		fprintf(stderr, "%s did not receive a MPOK response packet from server during interface request phase (type: %s)\n", 
+			err_m, data_stub);
+
+		free(recv_req_packet);
+		free(recv_req_header);
+		free(recv_req_data);
+
+		return 1;
+	}
+	given_ports = (int32_t *)malloc(num_interfaces*sizeof(int32_t));
+	for(i = 0; data_stub != NULL; i++)
+	{
+		data_stub = strtok(NULL, toks);
+		if(data_stub != NULL)
+		{
+			given_ports[i] = strtol(recv_req_packet->data, &end, 10);
+		}
+	}
+
+	//create threads for each interface
 	mptcp_sock_hndls = (int32_t *)malloc(num_interfaces*sizeof(int32_t));
 	mptcp_thread_ids = (pthread_t *)malloc(num_interfaces*sizeof(pthread_t));
 	for(i = 0; i < num_interfaces; i++)
 	{
-		status = mp_recv(serv_sock_fd, &recv_req_packet, MSS, 0);
-		if(status != MSS)
-		{
-			fprintf(stderr, "%s did not receive full packet size from server during interface request phase (bytes: %d/%d)\n", 
-				err_m, status, MSS);
-			
-			free(mptcp_sock_hndls);
-			free(mptcp_thread_ids);
-
-			return 1;
-		}
-
 		//spawn data channel threads with new port number
 		args = (arg_t *)malloc(sizeof(arg_t));
 		args->channel_id = i;
 		args->channel_ct = num_interfaces;
 		args->file_size = file_size;
-		args->port = strtol(recv_req_packet.data, &end, 10);
+		args->port = given_ports[i];
 		args->filename = filename;
-		args->serv_addr = serv_addr;
-		args->clnt_addr = clnt_addr;
-		args->serv_addr_len = serv_addr_len;
-		args->clnt_addr_len = clnt_addr_len;
+		args->hostname = hostname;
 		fflush(stdout);
 		status = pthread_create(&(mptcp_thread_ids[i]), NULL, mptcp_thread, (void *)args);
 		if(status)
@@ -302,14 +337,14 @@ int main(int argc, char *argv[])
 	}
 
 	//wait for end-of-transmission to be signaled
-	pthread_mutex_lock(&transfer_l);
+	pthread_mutex_lock(&transmission_end_l);
 
 	/*
-		detect file transmission completion, resync threads, check for any errors
+		handle end-of-transmission detection, resync threads, check for any errors
 	*/
 
 	//transmission completed succesfully, print statistics after handling threads
-	if(transfer_sig == 1)
+	if(transmission_end_sig == 1)
 	{
 		send_stats = (byte_stats_t *)malloc((num_interfaces+1)*sizeof(byte_stats_t));
 

@@ -21,10 +21,10 @@
  * packet header holds information about the current packet + connection      *
  ******************************************************************************/
 struct mptcp_header {
-    struct sockaddr_in dest_addr;    // pointer to remote destination address
-    struct sockaddr_in src_addr;     // pointer to local sender address
-    int                seq_num;      // packet sequence number
-    int                ack_num;      // NSEQ number
+    struct sockaddr_in dest_addr;    // remote destination address
+    struct sockaddr_in src_addr;     // local sender address
+    int                seq_num;      // sequence number ( first data byte )
+    int                ack_num;      // ACK number ( next expected data byte )
     int                total_bytes;  // total bytes of data to transmit
 };
 

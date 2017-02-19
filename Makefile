@@ -1,10 +1,10 @@
+TARGET = smptcp
 CC = gcc
 CFLAGS = -g -Wall
 LDFLAGS = -L. -lmptcp
 LIBS = -pthread
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
-TARGET = mptcp
 OBJECTS = $(patsubst %.c,%.o,$(wildcard *.c))
 HEADERS = $(wildcard *.h)
 
