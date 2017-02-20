@@ -36,34 +36,75 @@ int32_t unlock_fd(int32_t fd, struct flock *fl)
 	return 0;
 }
 
-int32_t get_fsize(char *fn)
+int32_t min(int32_t a, int32_t b)
 {
-	struct stat st;
-
-	if (stat(fn, &st) == 0)
+	if(a <= b)
 	{
-		return st.st_size;
+		return a;
 	}
-
-	fprintf(stderr, "%s encountered an issue while getting the size of the specified file\n", 
-				err_m);
-	return -1;
+	return b;
 }
 
-void write_packet(struct packet pkt)
+void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 {
 	char tmp[INET_ADDRSTRLEN];
 
-	fprintf(stdout, "<---------- PACKET START ---------->\n");
+	//obtain write lock
+	pthread_mutex_lock(&write_packet_l);
+
+	//print log header
+	if(channel_id > -1)
+	{
+		fprintf(stdout, "[CHANNEL %d]: ", 
+			channel_id);
+		if(isSend == 1)
+		{
+			fprintf(stdout, "SEND PACKET (%d/%d)\n", 
+				(int32_t)ceil((double)(*pkt.header).seq_num/MSS), (int32_t)ceil((double)file_size/MSS));
+		}
+		else
+		{
+			fprintf(stdout, "RECV PACKET (%d/%d)\n",
+				(*pkt.header).seq_num+1, (int32_t)ceil((double)file_size/MSS));
+		}
+	}
+	else
+	{
+		fprintf(stdout, "[MAIN]: ");
+		if(isSend == 1)
+		{
+			fprintf(stdout, "SEND PACKET (%d/%d)\n", 
+				(int32_t)ceil((double)(*pkt.header).seq_num/MSS), (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
+		}
+		else
+		{
+			fprintf(stdout, "RECV PACKET (%d/%d)\n",
+				(*pkt.header).seq_num, (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
+		}
+	}
+	
+	//print log body of packet info
+	fprintf(stdout, "===============================\n");
 	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
-	fprintf(stdout, "dest_addr   : %s\n", tmp);
-	fprintf(stdout, "dest_port   : %d\n", ntohs((*pkt.header).dest_addr.sin_port));
+	fprintf(stdout, "| dest_addr   : %s\n", 
+		tmp);
+	fprintf(stdout, "| dest_port   : %d\n", 
+		ntohs((*pkt.header).dest_addr.sin_port));
 	inet_ntop((*pkt.header).src_addr.sin_family, &((*pkt.header).src_addr.sin_addr), tmp, INET_ADDRSTRLEN);
-	fprintf(stdout, "src_addr    : %s\n", tmp);
-	fprintf(stdout, "src_port    : %d\n", ntohs((*pkt.header).src_addr.sin_port));
-	fprintf(stdout, "seq_num     : %d\n", (*pkt.header).seq_num);
-	fprintf(stdout, "ack_num     : %d\n", (*pkt.header).ack_num);
-	fprintf(stdout, "total_bytes : %d\n", (*pkt.header).total_bytes);
-	fprintf(stdout, "data        : %s\n", pkt.data);
-	fprintf(stdout, "<----------- PACKET END ----------->\n\n");
+	fprintf(stdout, "| src_addr    : %s\n", 
+		tmp);
+	fprintf(stdout, "| src_port    : %d\n", 
+		ntohs((*pkt.header).src_addr.sin_port));
+	fprintf(stdout, "| seq_num     : %d\n", 
+		(*pkt.header).seq_num);
+	fprintf(stdout, "| ack_num     : %d\n", 
+		(*pkt.header).ack_num);
+	fprintf(stdout, "| total_bytes : %d\n", 
+		(*pkt.header).total_bytes);
+	fprintf(stdout, "| data        : %s\n", 
+		pkt.data);
+	fprintf(stdout, "===============================\n\n");
+
+	//release write lock
+	pthread_mutex_unlock(&write_packet_l);
 }

@@ -1,7 +1,7 @@
 TARGET = smptcp
 CC = gcc
 CFLAGS = -g -Wall
-LDFLAGS = -L. -lmptcp
+LDFLAGS = -L. -lmptcp -lm
 LIBS = -pthread
 
 .PRECIOUS: $(TARGET) $(OBJECTS)
