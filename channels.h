@@ -7,9 +7,8 @@
 /*structs*/
 typedef struct send_arg_t
 {
-	int32_t channel_id;
-	struct sockaddr_in serv_addr;
-	struct sockaddr_in clnt_addr;
+	struct sockaddr_in *serv_addr;
+	struct sockaddr_in *clnt_addr;
 }send_arg_t;
 typedef struct recv_arg_t
 {
@@ -17,7 +16,7 @@ typedef struct recv_arg_t
 }recv_arg_t;
 typedef struct ret_t
 {
-	byte_stats_t stats;
+	byte_stats_t *stats;
 }ret_t;
 
 /*functions*/

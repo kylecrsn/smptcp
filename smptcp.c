@@ -11,7 +11,6 @@ int main(int argc, char *argv[])
 	int32_t c;
 	int32_t fd;
 	int32_t serv_sock_fd;
-	int32_t num_interfaces;
 	int32_t port;
 	long num_interfaces_l;
 	long port_l;
@@ -31,6 +30,7 @@ int main(int argc, char *argv[])
 	char hostname[INET_ADDRSTRLEN];
 	char msg_buf[MSS];
 	FILE *fp;
+	struct timeval recv_timeout;
 	struct flock *fl;
 	struct addrinfo hints;
 	struct addrinfo *serv_info;
@@ -38,13 +38,13 @@ int main(int argc, char *argv[])
 	struct sockaddr_in *serv_addr_name = NULL;
 	struct sockaddr_in serv_addr;
 	struct sockaddr_in clnt_addr;
-	struct sockaddr_in channel_serv_addr;
-	struct sockaddr_in channel_clnt_addr;
+	struct sockaddr_in *channel_serv_addr;
+	struct sockaddr_in *channel_clnt_addr;
 	socklen_t serv_addr_len;
 	socklen_t clnt_addr_len;
-	socklen_t channel_serv_addr_len;
-	socklen_t channel_clnt_addr_len;
-	pthread_t *send_channel_ids;
+	socklen_t *channel_serv_addr_len;
+	socklen_t *channel_clnt_addr_len;
+	pthread_t send_channel_id;
 	pthread_t *recv_channel_ids;
 	struct mptcp_header send_req_header;
 	struct mptcp_header *recv_req_header;
@@ -59,8 +59,8 @@ int main(int argc, char *argv[])
 		initial configuration
 	*/
 
-	pthread_mutex_init(&bytes_in_transit_l, NULL);
 	pthread_mutex_init(&transmission_end_l, NULL);
+	pthread_mutex_init(&packet_map_l, NULL);
 	pthread_mutex_init(&write_packet_l, NULL);
 	pthread_mutex_lock(&transmission_end_l);
 
@@ -321,33 +321,35 @@ int main(int argc, char *argv[])
 	}
 
 	/*
-		spawn send and recv channels for each port
+		spawn master send channel and a pool of recv channels for each port
 	*/
 
-	//intitialize total_send_stats
-	total_send_stats.bytes_sent = 0;
-	total_send_stats.bytes_dropped = 0;
-	total_send_stats.bytes_resent = 0;
+	//timeout value for receiving ACKs, 1 sec == 1000000 usec
+	recv_timeout.tv_sec = 0;
+	recv_timeout.tv_usec = 500000;
 
-	//create threads for each interface
+	//open sockets for each interface and spawn related recv channel thread
 	sock_hndls = (int32_t *)malloc(num_interfaces*sizeof(int32_t));
-	send_channel_ids = (pthread_t *)malloc(num_interfaces*sizeof(pthread_t));
 	recv_channel_ids = (pthread_t *)malloc(num_interfaces*sizeof(pthread_t));
+	channel_serv_addr = (struct sockaddr_in *)malloc(num_interfaces*sizeof(struct sockaddr_in));
+	channel_clnt_addr = (struct sockaddr_in *)malloc(num_interfaces*sizeof(struct sockaddr_in));
+	channel_serv_addr_len = (socklen_t *)malloc(num_interfaces*sizeof(socklen_t));
+	channel_clnt_addr_len = (socklen_t *)malloc(num_interfaces*sizeof(socklen_t));
 	for(i = 0; i < num_interfaces; i++)
 	{
 		//setup channel server sockaddr_in object
-		channel_serv_addr_len = sizeof(channel_serv_addr);
-		memset((char *)&channel_serv_addr, 0, channel_serv_addr_len);
-		channel_serv_addr.sin_family = AF_INET;
-		inet_pton(AF_INET, hostname, &(channel_serv_addr.sin_addr));
-		channel_serv_addr.sin_port = htons(given_ports[i]);
+		channel_serv_addr_len[i] = sizeof(channel_serv_addr[i]);
+		memset((char *)&channel_serv_addr[i], 0, channel_serv_addr_len[i]);
+		channel_serv_addr[i].sin_family = AF_INET;
+		inet_pton(AF_INET, hostname, &(channel_serv_addr[i].sin_addr));
+		channel_serv_addr[i].sin_port = htons(given_ports[i]);
 
 		//setup channel client sockaddr_in object
-		channel_clnt_addr_len = sizeof(channel_clnt_addr);
-		memset((char *)&channel_clnt_addr, 0, channel_clnt_addr_len);
-		channel_clnt_addr.sin_family = AF_INET;
-		inet_pton(AF_INET, "127.0.0.1", &(channel_clnt_addr.sin_addr));
-		channel_clnt_addr.sin_port = htons(0);
+		channel_clnt_addr_len[i] = sizeof(channel_clnt_addr[i]);
+		memset((char *)&channel_clnt_addr[i], 0, channel_clnt_addr_len[i]);
+		channel_clnt_addr[i].sin_family = AF_INET;
+		inet_pton(AF_INET, "127.0.0.1", &(channel_clnt_addr[i].sin_addr));
+		channel_clnt_addr[i].sin_port = htons(0);
 
 		//open a socket for the data channel
 		status = mp_socket(AF_INET, SOCK_MPTCP, IPPROTO_TCP);
@@ -357,45 +359,37 @@ int main(int argc, char *argv[])
 					err_m, i, errno, strerror(errno));
 
 			free(sock_hndls);
-			free(send_channel_ids);
 			free(recv_channel_ids);
+			free(channel_serv_addr);
+			free(channel_clnt_addr);
+			free(channel_serv_addr_len);
+			free(channel_clnt_addr_len);
 
 			return 1;
 		}
 		sock_hndls[i] = status;
 
+		//setup socket timeout for recv channel
+		setsockopt(sock_hndls[i], SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout)); 
+
 		//connect to the server
-		status = mp_connect(sock_hndls[i], (struct sockaddr *)&channel_serv_addr, channel_serv_addr_len);
+		status = mp_connect(sock_hndls[i], (struct sockaddr *)&channel_serv_addr[i], channel_serv_addr_len[i]);
 		if(status < 0)
 		{
 			fprintf(stderr, "%s failed to establish connection with the server on data channel %d (errno[%d]: %s)\n", 
 					err_m, i, errno, strerror(errno));
 			
 			free(sock_hndls);
-			free(send_channel_ids);
 			free(recv_channel_ids);
+			free(channel_serv_addr);
+			free(channel_clnt_addr);
+			free(channel_serv_addr_len);
+			free(channel_clnt_addr_len);
 
 			return 1;
 		}
 
-		//spawn send and recv channel threads
-		send_args = (send_arg_t *)malloc(sizeof(send_arg_t));
-		send_args->channel_id = i;
-		send_args->serv_addr = channel_serv_addr;
-		send_args->clnt_addr = channel_clnt_addr;
-		fflush(stdout);
-		status = pthread_create(&(send_channel_ids[i]), NULL, send_channel, (void *)send_args);
-		if(status)
-		{
-			fprintf(stderr, "%s failed to spawn a send_channel thread (errno[%d]: %s)\n", 
-				err_m, errno, strerror(errno));
-			
-			free(sock_hndls);
-			free(send_channel_ids);
-			free(recv_channel_ids);
-
-			return 1;
-		}
+		//spawn recv channel thread for each interface
 		recv_args = (recv_arg_t *)malloc(sizeof(recv_arg_t));
 		recv_args->channel_id = i;
 		status = pthread_create(&(recv_channel_ids[i]), NULL, recv_channel, (void *)recv_args);
@@ -405,11 +399,35 @@ int main(int argc, char *argv[])
 				err_m, errno, strerror(errno));
 			
 			free(sock_hndls);
-			free(send_channel_ids);
 			free(recv_channel_ids);
+			free(channel_serv_addr);
+			free(channel_clnt_addr);
+			free(channel_serv_addr_len);
+			free(channel_clnt_addr_len);
 
 			return 1;
 		}
+	}
+
+	//spawn master send channel thread
+	send_args = (send_arg_t *)malloc(sizeof(send_arg_t));
+	send_args->serv_addr = channel_serv_addr;
+	send_args->clnt_addr = channel_clnt_addr;
+	fflush(stdout);
+	status = pthread_create(&(send_channel_id), NULL, send_channel, (void *)send_args);
+	if(status)
+	{
+		fprintf(stderr, "%s failed to spawn a send_channel thread (errno[%d]: %s)\n", 
+			err_m, errno, strerror(errno));
+		
+		free(sock_hndls);
+		free(recv_channel_ids);
+		free(channel_serv_addr);
+		free(channel_clnt_addr);
+		free(channel_serv_addr_len);
+		free(channel_clnt_addr_len);
+
+		return 1;
 	}
 
 	//wait for end-of-transmission to be signaled
@@ -422,55 +440,52 @@ int main(int argc, char *argv[])
 	//transmission completed succesfully, print statistics after handling threads
 	if(transmission_end_sig == 1)
 	{
-		send_stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
-		send_stats[num_interfaces].bytes_sent = 0;
-		send_stats[num_interfaces].bytes_dropped = 0;
-		send_stats[num_interfaces].bytes_resent = 0;
-
-		//join send channel threads, get back data transfer statistics
-		for(i = 0; i < num_interfaces; i++)
-		{
-			fflush(stdout);
-			status = pthread_join(send_channel_ids[i], (void **)&rets);
-			send_stats[i].bytes_sent = rets->stats.bytes_sent;
-			send_stats[i].bytes_dropped = rets->stats.bytes_dropped;
-			total_send_stats.bytes_dropped += rets->stats.bytes_dropped;
-			send_stats[i].bytes_resent = rets->stats.bytes_resent;
-			total_send_stats.bytes_resent += rets->stats.bytes_resent;
-			free(rets);
-		}
+		//join send channel thread, get back data transfer statistics
+		fflush(stdout);
+		status = pthread_join(send_channel_id, (void **)&rets);
+		send_stats = rets->stats;
+		free(rets);
 
 		//join recv channel threads, rets will be NULL for each
 		for(i = 0; i < num_interfaces; i++)
 		{
 			fflush(stdout);
-			///pthread_join(recv_channel_ids[i], (void **)&rets);
-			pthread_cancel(recv_channel_ids[i]);
+			pthread_join(recv_channel_ids[i], (void **)&rets);
+			//pthread_cancel(recv_channel_ids[i]);
 		}
 	}
 	else
 	{
+		fprintf(stderr, "%s an error occurred while sending data/receiving ACKs, exiting...\n", 
+			err_m);
+
 		//close sockets and cancel threads
 		for(i = 0; i < num_interfaces; i++)
 		{
 			close(sock_hndls[i]);
 			fflush(stdout);
-			pthread_cancel(send_channel_ids[i]);
 			pthread_cancel(recv_channel_ids[i]);
 		}
+		pthread_cancel(send_channel_id);
 
 		free(sock_hndls);
-		free(send_channel_ids);
 		free(recv_channel_ids);
+		free(channel_serv_addr);
+		free(channel_clnt_addr);
+		free(channel_serv_addr_len);
+		free(channel_clnt_addr_len);
 
 		return 1;
 	}
 
 	//Report data transfer statistics
 	fprintf(stdout, "\nData Transfer Statistics\n========================\n");
-	fprintf(stdout, "Total Bytes Sent    : %d\n", total_send_stats.bytes_sent);
-	fprintf(stdout, "Total Bytes Dropped : %d\n", total_send_stats.bytes_dropped);
-	fprintf(stdout, "Total Bytes Resent  : %d\n\n", total_send_stats.bytes_resent);
+	fprintf(stdout, "Total Bytes Sent    : %d\n", 
+		total_send_stats.bytes_sent);
+	fprintf(stdout, "Total Bytes Dropped : %d\n", 
+		total_send_stats.bytes_dropped);
+	fprintf(stdout, "Total Bytes Resent  : %d\n\n", 
+		total_send_stats.bytes_resent);
 	for(i = 0; i < num_interfaces; i++)
 	{
 		fprintf(stdout, "Data Channel %d\n==============", i);
@@ -479,9 +494,12 @@ int main(int argc, char *argv[])
 			fprintf(stdout, "=");
 		}
 		fprintf(stdout, "\n");
-		fprintf(stdout, "Bytes Sent    : %d\n", send_stats[i].bytes_sent);
-		fprintf(stdout, "Bytes Dropped : %d\n", send_stats[i].bytes_dropped);
-		fprintf(stdout, "Bytes Resent  : %d\n\n", send_stats[i].bytes_resent);
+		fprintf(stdout, "Bytes Sent    : %d\n", 
+			send_stats[i].bytes_sent);
+		fprintf(stdout, "Bytes Dropped : %d\n", 
+			send_stats[i].bytes_dropped);
+		fprintf(stdout, "Bytes Resent  : %d\n\n", 
+			send_stats[i].bytes_resent);
 	}
 
 	/*
@@ -491,9 +509,11 @@ int main(int argc, char *argv[])
 	unlock_fd(fd, fl);
 	fclose(fp);
 	free(sock_hndls);
-	free(send_channel_ids);
 	free(recv_channel_ids);
-	//free(send_stats);
+	free(channel_serv_addr);
+	free(channel_clnt_addr);
+	free(channel_serv_addr_len);
+	free(channel_clnt_addr_len);
 
 	return ret;
 }

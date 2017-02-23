@@ -47,6 +47,7 @@ int32_t min(int32_t a, int32_t b)
 
 void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 {
+	int32_t i;
 	char tmp[INET_ADDRSTRLEN];
 
 	//obtain write lock
@@ -64,8 +65,16 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 		}
 		else
 		{
+			if((*pkt.header).ack_num == -1)
+			{
 			fprintf(stdout, "RECV PACKET (%d/%d)\n",
 				(*pkt.header).seq_num+1, (int32_t)ceil((double)file_size/MSS));
+			}
+			else
+			{
+			fprintf(stdout, "RECV PACKET (%d/%d)\n",
+				(*pkt.header).ack_num/MSS, (int32_t)ceil((double)file_size/MSS));
+			}
 		}
 	}
 	else
@@ -84,7 +93,20 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	}
 	
 	//print log body of packet info
-	fprintf(stdout, "===============================\n");
+	fprintf(stdout, "====================================\n");
+
+	//print out packet map state
+	if(channel_id > -1)
+	{
+		printf("channel_map[");
+		for(i = 0; i < num_interfaces-1; i++)
+		{
+			printf("(%d, %d), ", channel_map[i].id+1, channel_map[i].state);
+		}
+		printf("(%d, %d)]\n", channel_map[i].id+1, channel_map[i].state);
+		fprintf(stdout, "====================================\n");
+	}
+
 	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
 	fprintf(stdout, "| dest_addr   : %s\n", 
 		tmp);
@@ -103,8 +125,8 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 		(*pkt.header).total_bytes);
 	fprintf(stdout, "| data        : %s\n", 
 		pkt.data);
-	fprintf(stdout, "===============================\n\n");
-
+	fprintf(stdout, "====================================\n\n");
+	
 	//release write lock
 	pthread_mutex_unlock(&write_packet_l);
 }

@@ -2,16 +2,30 @@
 
 void *send_channel(void *arg)
 {
+	int32_t i;
 	int32_t status;
 	int32_t send_size;
-	int32_t channel_id;
 	char msg_buf[MSS];
-	struct sockaddr_in serv_addr;
-	struct sockaddr_in clnt_addr;
+	struct sockaddr_in *serv_addr;
+	struct sockaddr_in *clnt_addr;
 	struct mptcp_header send_req_header;
 	struct packet send_req_packet;
 	send_arg_t *args = (send_arg_t *)arg;
 	ret_t *rets = (ret_t *)malloc(sizeof(ret_t));
+
+
+
+	channel_map = (packet_state_t *)malloc(num_interfaces*sizeof(packet_state_t));
+	for(i = 0; i < num_interfaces; i++)
+	{
+		channel_map[i].id = 0;
+		channel_map[i].state = NEW;
+	}
+	max_ackd_num = 1;
+	packets_in_buffer = 0;
+	int32_t channel_select;
+
+
 
 	/*
 		initial configuration
@@ -19,62 +33,110 @@ void *send_channel(void *arg)
 
 	//unpack args
 	fflush(stdout);
-	channel_id = args->channel_id;
 	serv_addr = args->serv_addr;
 	clnt_addr = args->clnt_addr;
 	free(args);
 
 	//initialize rets
-	rets->stats.bytes_sent = 0;
-	rets->stats.bytes_dropped = 0;
-	rets->stats.bytes_resent = 0;
+	rets->stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
+	for(i = 0; i < num_interfaces; i++)
+	{
+		rets->stats[i].bytes_sent = 0;
+		rets->stats[i].bytes_dropped = 0;
+		rets->stats[i].bytes_resent = 0;
+	}
+
+	//intitialize total_send_stats
+	total_send_stats.bytes_sent = 0;
+	total_send_stats.bytes_dropped = 0;
+	total_send_stats.bytes_resent = 0;
 
 	/*
 		send data packets to server
 	*/
 
 	//assemble request packet header
-	send_req_header.dest_addr = serv_addr;
-	send_req_header.src_addr = clnt_addr;
 	send_req_header.ack_num = 0;
 	send_req_header.total_bytes = file_size;
 	send_req_packet.header = &send_req_header;
 	send_req_packet.data = msg_buf;
 
-	//continue as long as the end_of_transmiison sig hasn't been changed by some thread
+	//continue as long as the end_of_transmiison sig hasn't been changed by some recv channel thread
 	while(transmission_end_sig == 0)
 	{
-		//make sure not to over-send packets
-		pthread_mutex_lock(&bytes_in_transit_l);
-		if(bytes_in_transit == RWIN || total_send_stats.bytes_sent == file_size)
+		//run state machine over channel_map
+		pthread_mutex_lock(&packet_map_l);
+		if(transmission_end_sig != 0)
 		{
-			pthread_mutex_unlock(&bytes_in_transit_l);
+			free(channel_map);
+			pthread_mutex_unlock(&packet_map_l);
+			pthread_exit((void *)rets);
+		}
+
+		channel_select = -1;
+		packets_in_buffer = 0;
+		for(i = 0; i < num_interfaces; i++)
+		{
+			switch(channel_map[i].state)
+			{
+				case NEW:
+				{
+					if(channel_select == -1)
+					{
+						channel_select = i;
+						channel_map[i].state = SENT;
+					}
+					break;
+				}
+				case SENT:
+				{
+					packets_in_buffer++;
+					break;
+				}
+				case TIMEDOUT:
+				{
+					if(channel_select == -1)
+					{
+						channel_select = i;
+						channel_map[i].state = SENT;
+					}
+					packets_in_buffer++;
+					break;
+				}
+			}
+		}
+		if(packets_in_buffer == num_interfaces)
+		{
+			pthread_mutex_unlock(&packet_map_l);
 			continue;
 		}
 
+		//set the serv and clnt addresses
+		send_req_header.dest_addr = serv_addr[channel_select];
+		send_req_header.src_addr = clnt_addr[channel_select];
+
 		//assemble request packet
-		send_req_header.seq_num = 1 + total_send_stats.bytes_sent;
-		send_size = min(MSS, file_size-total_send_stats.bytes_sent);
+		send_req_header.seq_num = channel_map[channel_select].id*MSS + 1;
+		send_size = min(MSS, file_size-(channel_map[channel_select].id*MSS));
 		memset(msg_buf, 0, MSS);
-		strncpy(msg_buf, file_buf+total_send_stats.bytes_sent, send_size);
-		write_packet(send_req_packet, channel_id, 1);
+		strncpy(msg_buf, file_buf+(channel_map[channel_select].id*MSS), send_size);
+		write_packet(send_req_packet, channel_select, 1);
 
 		//send packet to server
-		status = mp_send(sock_hndls[channel_id], &send_req_packet, send_size, 0);
+		status = mp_send(sock_hndls[channel_select], &send_req_packet, send_size, 0);
 		if(status != send_size)
 		{
 			fprintf(stderr, "%s did not send full packet size to server from data channel %d (bytes: %d/%d)\n", 
-					err_m, channel_id, status, send_size);
+					err_m, channel_select, status, send_size);
 
 			pthread_mutex_unlock(&transmission_end_l);
 			pthread_exit((void *)rets);
 		}
 
-		rets->stats.bytes_sent += send_size;
+		//update bytes sent values
+		rets->stats[channel_select].bytes_sent += send_size;
 		total_send_stats.bytes_sent += send_size;
-		bytes_in_transit += send_size;
-
-		pthread_mutex_unlock(&bytes_in_transit_l);
+		pthread_mutex_unlock(&packet_map_l);
 	}
 
 	pthread_exit((void *)rets);
@@ -82,6 +144,7 @@ void *send_channel(void *arg)
 
 void *recv_channel(void *arg)
 {
+	int32_t i;
 	int32_t channel_id;
 	char *recv_req_data;
 	struct mptcp_header *recv_req_header;
@@ -111,19 +174,62 @@ void *recv_channel(void *arg)
 	while(transmission_end_sig == 0)
 	{
 		//receive ACK back
+		errno = 0;
+		(*recv_req_packet->header).ack_num = 0;
 		mp_recv(sock_hndls[channel_id], recv_req_packet, 0, 0);
-		write_packet(*recv_req_packet, channel_id, 0);
+		if(transmission_end_sig == 1)
+		{
+			break;
+		}
+		pthread_mutex_lock(&packet_map_l);
+
+		//mp_recv timed-out as set by setsockopt from the main thread
+		if(errno == EAGAIN)
+		{
+			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d REQUEST TIMED OUT, RESENDING\n\n", 
+				channel_id, (int32_t)ceil((double)max_ackd_num/MSS));
+			channel_map[channel_id].state = TIMEDOUT;
+			pthread_mutex_unlock(&packet_map_l);
+			continue;
+		}
+
+		//catch an ACK of -1 indicating the transmission has completed
 		if((*recv_req_packet->header).ack_num == -1)
 		{
+			write_packet(*recv_req_packet, channel_id, 0);
 			transmission_end_sig = 1;
+			pthread_mutex_unlock(&packet_map_l);
 			pthread_mutex_unlock(&transmission_end_l);
 			break;
 		}
 
-		//decrement the number of bytes seen by the window
-		pthread_mutex_lock(&bytes_in_transit_l);
-		bytes_in_transit -= MSS;
-		pthread_mutex_unlock(&bytes_in_transit_l);
+		if((*recv_req_packet->header).ack_num > max_ackd_num)
+		{
+			switch(channel_map[channel_id].state)
+			{
+				case SENT:
+				{
+					max_ackd_num = (*recv_req_packet->header).ack_num;
+					for(i = 0; i < num_interfaces; i++)
+					{
+						channel_map[i].id++;
+						channel_map[i].state = NEW;
+					}
+					break;
+				}
+				default:
+				{
+					printf("fuck\n");
+				}
+			}
+			write_packet(*recv_req_packet, channel_id, 0);
+		}
+		else
+		{
+			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d DUPLICATE ACK FROM PREVIOUS REQUEST\n\n", 
+				channel_id, max_ackd_num/MSS);
+		}
+		pthread_mutex_unlock(&packet_map_l);
 	}
 
 	free(recv_req_packet);
