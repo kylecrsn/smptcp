@@ -65,16 +65,8 @@ void *send_channel(void *arg)
 	while(transmission_end_sig == 0)
 	{
 		//run state machine over channel_map
-		pthread_mutex_lock(&packet_map_l);
-		if(transmission_end_sig != 0)
-		{
-			free(channel_map);
-			pthread_mutex_unlock(&packet_map_l);
-			pthread_exit((void *)rets);
-		}
-
 		channel_select = -1;
-		packets_in_buffer = 0;
+		pthread_mutex_lock(&channel_map_l);
 		for(i = 0; i < num_interfaces; i++)
 		{
 			switch(channel_map[i].state)
@@ -90,7 +82,6 @@ void *send_channel(void *arg)
 				}
 				case SENT:
 				{
-					packets_in_buffer++;
 					break;
 				}
 				case TIMEDOUT:
@@ -100,16 +91,18 @@ void *send_channel(void *arg)
 						channel_select = i;
 						channel_map[i].state = SENT;
 					}
-					packets_in_buffer++;
 					break;
 				}
 			}
 		}
-		if(packets_in_buffer == num_interfaces)
+		pthread_mutex_lock(&packets_in_buffer_l);
+		if(packets_in_buffer > 7 || channel_select == -1)
 		{
-			pthread_mutex_unlock(&packet_map_l);
+			pthread_mutex_unlock(&packets_in_buffer_l);
+			pthread_mutex_unlock(&channel_map_l);
 			continue;
 		}
+		pthread_mutex_unlock(&packets_in_buffer_l);
 
 		//set the serv and clnt addresses
 		send_req_header.dest_addr = serv_addr[channel_select];
@@ -121,9 +114,13 @@ void *send_channel(void *arg)
 		memset(msg_buf, 0, MSS);
 		strncpy(msg_buf, file_buf+(channel_map[channel_select].id*MSS), send_size);
 		write_packet(send_req_packet, channel_select, 1);
+		pthread_mutex_unlock(&channel_map_l);
 
 		//send packet to server
 		status = mp_send(sock_hndls[channel_select], &send_req_packet, send_size, 0);
+		pthread_mutex_lock(&packets_in_buffer_l);
+		packets_in_buffer++;
+		pthread_mutex_unlock(&packets_in_buffer_l);
 		if(status != send_size)
 		{
 			fprintf(stderr, "%s did not send full packet size to server from data channel %d (bytes: %d/%d)\n", 
@@ -136,9 +133,9 @@ void *send_channel(void *arg)
 		//update bytes sent values
 		rets->stats[channel_select].bytes_sent += send_size;
 		total_send_stats.bytes_sent += send_size;
-		pthread_mutex_unlock(&packet_map_l);
 	}
 
+	free(channel_map);
 	pthread_exit((void *)rets);
 }
 
@@ -177,34 +174,42 @@ void *recv_channel(void *arg)
 		errno = 0;
 		(*recv_req_packet->header).ack_num = 0;
 		mp_recv(sock_hndls[channel_id], recv_req_packet, 0, 0);
+				pthread_mutex_unlock(&packets_in_buffer_l);
+		packets_in_buffer--;
+		pthread_mutex_unlock(&packets_in_buffer_l);
 		if(transmission_end_sig == 1)
 		{
 			break;
 		}
-		pthread_mutex_lock(&packet_map_l);
 
 		//mp_recv timed-out as set by setsockopt from the main thread
 		if(errno == EAGAIN)
 		{
+			pthread_mutex_lock(&write_l);
 			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d REQUEST TIMED OUT, RESENDING\n\n", 
 				channel_id, (int32_t)ceil((double)max_ackd_num/MSS));
+			pthread_mutex_unlock(&write_l);
+			pthread_mutex_lock(&channel_map_l);
 			channel_map[channel_id].state = TIMEDOUT;
-			pthread_mutex_unlock(&packet_map_l);
+			pthread_mutex_unlock(&channel_map_l);
 			continue;
 		}
 
 		//catch an ACK of -1 indicating the transmission has completed
 		if((*recv_req_packet->header).ack_num == -1)
 		{
+			pthread_mutex_lock(&channel_map_l);
 			write_packet(*recv_req_packet, channel_id, 0);
 			transmission_end_sig = 1;
-			pthread_mutex_unlock(&packet_map_l);
+			pthread_mutex_unlock(&channel_map_l);
 			pthread_mutex_unlock(&transmission_end_l);
 			break;
 		}
 
+		printf("this: %d max: %d\n", (*recv_req_packet->header).ack_num, max_ackd_num);
 		if((*recv_req_packet->header).ack_num > max_ackd_num)
 		{
+			pthread_mutex_lock(&channel_map_l);
 			switch(channel_map[channel_id].state)
 			{
 				case SENT:
@@ -219,17 +224,19 @@ void *recv_channel(void *arg)
 				}
 				default:
 				{
-					printf("fuck\n");
+					printf("fuck\n\n\n\n\n%d\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n", channel_map[channel_id].state);
 				}
 			}
 			write_packet(*recv_req_packet, channel_id, 0);
+			pthread_mutex_unlock(&channel_map_l);
 		}
 		else
 		{
+			pthread_mutex_lock(&write_l);
 			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d DUPLICATE ACK FROM PREVIOUS REQUEST\n\n", 
 				channel_id, max_ackd_num/MSS);
+			pthread_mutex_unlock(&write_l);
 		}
-		pthread_mutex_unlock(&packet_map_l);
 	}
 
 	free(recv_req_packet);

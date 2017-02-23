@@ -51,7 +51,7 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	char tmp[INET_ADDRSTRLEN];
 
 	//obtain write lock
-	pthread_mutex_lock(&write_packet_l);
+	pthread_mutex_lock(&write_l);
 
 	//print log header
 	if(channel_id > -1)
@@ -98,13 +98,12 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	//print out packet map state
 	if(channel_id > -1)
 	{
-		printf("channel_map[");
+		printf("| channel_map[");
 		for(i = 0; i < num_interfaces-1; i++)
 		{
 			printf("(%d, %d), ", channel_map[i].id+1, channel_map[i].state);
 		}
 		printf("(%d, %d)]\n", channel_map[i].id+1, channel_map[i].state);
-		fprintf(stdout, "====================================\n");
 	}
 
 	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
@@ -128,5 +127,5 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	fprintf(stdout, "====================================\n\n");
 	
 	//release write lock
-	pthread_mutex_unlock(&write_packet_l);
+	pthread_mutex_unlock(&write_l);
 }

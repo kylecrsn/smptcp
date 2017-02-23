@@ -60,8 +60,10 @@ int main(int argc, char *argv[])
 	*/
 
 	pthread_mutex_init(&transmission_end_l, NULL);
-	pthread_mutex_init(&packet_map_l, NULL);
-	pthread_mutex_init(&write_packet_l, NULL);
+	pthread_mutex_init(&channel_map_l, NULL);
+	pthread_mutex_init(&packets_in_buffer_l, NULL);
+	pthread_mutex_init(&max_ackd_num_l, NULL);
+	pthread_mutex_init(&write_l, NULL);
 	pthread_mutex_lock(&transmission_end_l);
 
 	/*
@@ -325,8 +327,8 @@ int main(int argc, char *argv[])
 	*/
 
 	//timeout value for receiving ACKs, 1 sec == 1000000 usec
-	recv_timeout.tv_sec = 0;
-	recv_timeout.tv_usec = 500000;
+	recv_timeout.tv_sec = 5;
+	recv_timeout.tv_usec = 0;
 
 	//open sockets for each interface and spawn related recv channel thread
 	sock_hndls = (int32_t *)malloc(num_interfaces*sizeof(int32_t));
@@ -445,12 +447,14 @@ int main(int argc, char *argv[])
 		status = pthread_join(send_channel_id, (void **)&rets);
 		send_stats = rets->stats;
 		free(rets);
+		close(send_channel_id);
 
 		//join recv channel threads, rets will be NULL for each
 		for(i = 0; i < num_interfaces; i++)
 		{
 			fflush(stdout);
 			pthread_join(recv_channel_ids[i], (void **)&rets);
+			close(sock_hndls[i]);
 			//pthread_cancel(recv_channel_ids[i]);
 		}
 	}

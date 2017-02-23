@@ -52,15 +52,11 @@ int32_t file_size;
 int32_t transmission_end_sig;
 byte_stats_t total_send_stats;
 pthread_mutex_t transmission_end_l;
-pthread_mutex_t write_packet_l;
-pthread_mutex_t packet_map_l;
+pthread_mutex_t write_l;
+pthread_mutex_t channel_map_l;
+pthread_mutex_t packets_in_buffer_l;
+pthread_mutex_t max_ackd_num_l;
 
-/*int32_t packets_in_buffer;
-int32_t *packet_map;
-int32_t packet_ct;
-int32_t packet_dupd;
-int32_t max_ack_num;
-int32_t resend_last_packet;*/
 int32_t packets_in_buffer;
 int32_t max_ackd_num;
 packet_state_t *channel_map;
