@@ -2,6 +2,7 @@
 
 int main(int argc, char *argv[])
 {
+	bad_state = 0;
 	opterr = 0;
 	transmission_end_sig = 0;
 	int32_t *given_ports;
@@ -504,6 +505,12 @@ int main(int argc, char *argv[])
 			send_stats[i].bytes_dropped);
 		fprintf(stdout, "Bytes Resent  : %d\n\n", 
 			send_stats[i].bytes_resent);
+	}
+
+	if(bad_state > 0)
+	{
+		fprintf(stdout, "Number of Bad State entries: %d\n", 
+			bad_state);
 	}
 
 	/*

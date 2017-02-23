@@ -174,7 +174,7 @@ void *recv_channel(void *arg)
 		errno = 0;
 		(*recv_req_packet->header).ack_num = 0;
 		mp_recv(sock_hndls[channel_id], recv_req_packet, 0, 0);
-				pthread_mutex_unlock(&packets_in_buffer_l);
+		pthread_mutex_unlock(&packets_in_buffer_l);
 		packets_in_buffer--;
 		pthread_mutex_unlock(&packets_in_buffer_l);
 		if(transmission_end_sig == 1)
@@ -206,7 +206,6 @@ void *recv_channel(void *arg)
 			break;
 		}
 
-		printf("this: %d max: %d\n", (*recv_req_packet->header).ack_num, max_ackd_num);
 		if((*recv_req_packet->header).ack_num > max_ackd_num)
 		{
 			pthread_mutex_lock(&channel_map_l);
@@ -224,7 +223,11 @@ void *recv_channel(void *arg)
 				}
 				default:
 				{
-					printf("fuck\n\n\n\n\n%d\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n\n", channel_map[channel_id].state);
+					fprintf(stdout, "\n\n\n\n\n\n\n\n[CHANNEL %d]: RECV PACKET %d ENETERED SWITCH FROM BAD STATE\n\n\n\n\n\n\n\n", 
+						channel_id, max_ackd_num/MSS);
+					printf("this: %d max: %d\n", (*recv_req_packet->header).ack_num, max_ackd_num);
+					bad_state++;
+					break;
 				}
 			}
 			write_packet(*recv_req_packet, channel_id, 0);

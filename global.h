@@ -61,6 +61,7 @@ int32_t packets_in_buffer;
 int32_t max_ackd_num;
 packet_state_t *channel_map;
 int32_t num_interfaces;
+int32_t bad_state;
 
 /*functions*/
 struct flock *lock_fd(int32_t fd);
