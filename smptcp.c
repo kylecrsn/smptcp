@@ -6,6 +6,7 @@ int main(int argc, char *argv[])
 	transmission_end_sig = 0;
 	int32_t *given_ports;
 	int32_t ret = 0;
+	int32_t main_channel_id = -1;
 	int32_t status;
 	int32_t i;
 	int32_t c;
@@ -260,7 +261,8 @@ int main(int argc, char *argv[])
 	send_req_header.total_bytes = sprintf(msg_buf, "%s %d", MPREQ, num_interfaces);
 	send_req_packet.header = &send_req_header;
 	send_req_packet.data = msg_buf;
-	write_packet(send_req_packet, -1, 1);
+	log_action(send_req_packet, main_channel_id, 1);
+	log_packet(send_req_packet, main_channel_id);
 
 	//send packet to server
 	status = mp_send(serv_sock_fd, &send_req_packet, MSS, 0);
@@ -275,14 +277,17 @@ int main(int argc, char *argv[])
 		recv response for num_interface ports from server
 	*/
 
-	//recv response packet from server
+	//setup recv packet memory
 	recv_req_packet = (struct packet *)malloc(sizeof(struct packet));
 	recv_req_header = (struct mptcp_header *)malloc(sizeof(struct mptcp_header));
 	recv_req_data = (char *)malloc(MSS*sizeof(char));
 	recv_req_packet->header = recv_req_header;
 	recv_req_packet->data = recv_req_data;
+
+	//recv response packet from server
 	status = mp_recv(serv_sock_fd, recv_req_packet, MSS, 0);
-	write_packet(*recv_req_packet, -1, 0);
+	log_action(*recv_req_packet, main_channel_id, 0);
+	log_packet(*recv_req_packet, main_channel_id);
 	if((*recv_req_packet->header).ack_num == -1)
 	{
 		fprintf(stderr, "%s did not receive full packet size from server during interface request phase (bytes: %d/%d)\n", 
@@ -481,22 +486,10 @@ int main(int argc, char *argv[])
 	}
 
 	//Report data transfer statistics
-	fprintf(stdout, "\nData Transfer Statistics\n=========================\n");
-	fprintf(stdout, "Total Bytes Sent       : %d\n", 
-		total_stats.bytes_sent);
-	fprintf(stdout, "Bytes Dropped/Resent   : %d\n", 
-		total_stats.bytes_dropped);
-	fprintf(stdout, "Bytes Timed Out/Resent : %d\n\n", 
-		total_stats.bytes_timedout);
+	log_stats(main_channel_id, total_stats);
 	for(i = 0; i < num_interfaces; i++)
 	{
-		fprintf(stdout, "Data Channel %d\n===============\n", i);
-		fprintf(stdout, "Total Bytes Sent       : %d\n", 
-			channel_stats[i].bytes_sent);
-		fprintf(stdout, "Bytes Dropped/Resent   : %d\n", 
-			channel_stats[i].bytes_dropped);
-		fprintf(stdout, "Bytes Timed Out/Resent : %d\n\n", 
-			channel_stats[i].bytes_timedout);
+		log_stats(i, channel_stats[i]);
 	}
 
 	/*

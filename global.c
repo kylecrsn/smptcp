@@ -54,87 +54,129 @@ int32_t max(int32_t a, int32_t b)
 	return b;
 }
 
-void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
+void log_action(struct packet pkt, int32_t channel_id, int32_t isSend)
 {
-	//int32_t i;
-	char tmp[INET_ADDRSTRLEN];
+	char *send_msg = "sending packet (%d/%d) to server\n";
+	char *recv_msg = "receving packet (%d/%d) from server\n";
 
-	//obtain write lock
+	//obtain log lock
 	pthread_mutex_lock(&log_l);
 
-	//print log header
-	if(channel_id > -1)
+	if(channel_id < 0)
 	{
-		fprintf(stdout, "[CHANNEL %d]: ", 
+		fprintf(stdout, "[main]: ");
+		if(isSend == 1)
+		{
+			fprintf(stdout, send_msg, 
+				(int32_t)ceil((double)(*pkt.header).seq_num/MSS), (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
+		}
+		else
+		{
+			fprintf(stdout, recv_msg,
+				(*pkt.header).seq_num, (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
+		}
+	}
+	else
+	{
+		fprintf(stdout, "[channel %d]: ", 
 			channel_id);
 		if(isSend == 1)
 		{
-			fprintf(stdout, "SEND PACKET (%d/%d)\n", 
+			fprintf(stdout, send_msg, 
 				(int32_t)ceil((double)(*pkt.header).seq_num/MSS), (int32_t)ceil((double)file_size/MSS));
 		}
 		else
 		{
 			if((*pkt.header).ack_num == -1)
 			{
-			fprintf(stdout, "RECV PACKET (%d/%d)\n",
+			fprintf(stdout, recv_msg,
 				(*pkt.header).seq_num+1, (int32_t)ceil((double)file_size/MSS));
 			}
 			else
 			{
-			fprintf(stdout, "RECV PACKET (%d/%d)\n",
+			fprintf(stdout, recv_msg,
 				(*pkt.header).ack_num/MSS, (int32_t)ceil((double)file_size/MSS));
 			}
 		}
 	}
-	else
-	{
-		fprintf(stdout, "[MAIN]: ");
-		if(isSend == 1)
-		{
-			fprintf(stdout, "SEND PACKET (%d/%d)\n", 
-				(int32_t)ceil((double)(*pkt.header).seq_num/MSS), (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
-		}
-		else
-		{
-			fprintf(stdout, "RECV PACKET (%d/%d)\n",
-				(*pkt.header).seq_num, (int32_t)ceil((double)(*pkt.header).total_bytes/MSS));
-		}
-	}
-	
-	//print log body of packet info
-	fprintf(stdout, "====================================\n");
 
-/*	//print out packet map state
-	if(channel_id > -1)
-	{
-		printf("| channel_map[");
-		for(i = 0; i < num_interfaces-1; i++)
-		{
-			printf("(%d, %d), ", channel_map[i].id+1, channel_map[i].state);
-		}
-		printf("(%d, %d)]\n", channel_map[i].id+1, channel_map[i].state);
-	}*/
+	//release log lock
+	pthread_mutex_unlock(&log_l);
+}
 
+void log_packet(struct packet pkt, int32_t channel_id)
+{
+	char tmp[INET_ADDRSTRLEN];
+
+	//obtain log lock
+	pthread_mutex_lock(&log_l);
+
+	fprintf(stdout, "== PACKET CONTENTS =================\n");
 	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
-	fprintf(stdout, "| dest_addr   : %s\n", 
-		tmp);
-	fprintf(stdout, "| dest_port   : %d\n", 
-		ntohs((*pkt.header).dest_addr.sin_port));
+	fprintf(stdout, "| dest_addr   : %s\n", tmp);
+	fprintf(stdout, "| dest_port   : %d\n", ntohs((*pkt.header).dest_addr.sin_port));
 	inet_ntop((*pkt.header).src_addr.sin_family, &((*pkt.header).src_addr.sin_addr), tmp, INET_ADDRSTRLEN);
-	fprintf(stdout, "| src_addr    : %s\n", 
-		tmp);
-	fprintf(stdout, "| src_port    : %d\n", 
-		ntohs((*pkt.header).src_addr.sin_port));
-	fprintf(stdout, "| seq_num     : %d\n", 
-		(*pkt.header).seq_num);
-	fprintf(stdout, "| ack_num     : %d\n", 
-		(*pkt.header).ack_num);
-	fprintf(stdout, "| total_bytes : %d\n", 
-		(*pkt.header).total_bytes);
-	fprintf(stdout, "| data        : %s\n", 
-		pkt.data);
+	fprintf(stdout, "| src_addr    : %s\n", tmp);
+	fprintf(stdout, "| src_port    : %d\n", ntohs((*pkt.header).src_addr.sin_port));
+	fprintf(stdout, "| seq_num     : %d\n", (*pkt.header).seq_num);
+	fprintf(stdout, "| ack_num     : %d\n", (*pkt.header).ack_num);
+	fprintf(stdout, "| total_bytes : %d\n", (*pkt.header).total_bytes);
+	fprintf(stdout, "| data        : %s\n", pkt.data);
 	fprintf(stdout, "====================================\n\n");
 	
-	//release write lock
+	//release log lock
+	pthread_mutex_unlock(&log_l);
+}
+
+void log_state()
+{
+	//obtain log lock
+	pthread_mutex_lock(&log_l);
+
+	fprintf(stdout, "== SYSTEM STATE ====================\n");
+	fprintf(stdout, "| cwnd               : %d\n", cwnd);
+	fprintf(stdout, "| rwnd               : %d\n", rwnd);
+	fprintf(stdout, "| max_ackd_num       : %d\n", max_ackd_num);
+	fprintf(stdout, "| max_send_num       : %d\n", max_send_num);
+	fprintf(stdout, "| highest_sent_num   : %d\n", highest_sent_num);
+	fprintf(stdout, "| last_sent_num      : %d\n", last_sent_num);
+	fprintf(stdout, "| flight_size        : %d\n", flight_size);
+	fprintf(stdout, "| old_flight_size    : %d\n", old_flight_size);
+	fprintf(stdout, "| ssthresh           : %d\n", ssthresh);
+	fprintf(stdout, "| newly_ackd_num     : %d\n", newly_ackd_num);
+	fprintf(stdout, "| system_state       : %d\n", system_state);
+	fprintf(stdout, "| dupd_packets_recvd : %d\n", dupd_packets_recvd);
+	fprintf(stdout, "| dupd_packet_limit  : %d\n", dupd_packet_limit);
+	fprintf(stdout, "| this_ack_num       : %d\n", this_ack_num);
+	fprintf(stdout, "| prev_ack_num       : %d\n", this_ack_num);
+	fprintf(stdout, "====================================\n\n");
+
+	//release log lock
+	pthread_mutex_unlock(&log_l);
+}
+
+void log_stats(int32_t channel_id, byte_stats_t stats)
+{
+	//obtain log lock
+	pthread_mutex_lock(&log_l);
+
+	if(channel_id < 0)
+	{
+		fprintf(stdout, "\n== OVERALL TRANSMISSION STATISTICS =====================\n");
+	}
+	else
+	{
+		fprintf(stdout, "== DATA CHANNEL %d ================", channel_id);
+		if(channel_id < 10)
+		{
+			fprintf(stdout, "=");
+		}
+		fprintf(stdout, "\n");
+	}
+	fprintf(stdout, "| Total Bytes Sent       : %d\n", stats.bytes_sent);
+	fprintf(stdout, "| Bytes Dropped/Resent   : %d\n", stats.bytes_dropped);
+	fprintf(stdout, "| Bytes Timed-Out/Resent : %d\n\n", stats.bytes_timedout);
+
+	//release log lock
 	pthread_mutex_unlock(&log_l);
 }

@@ -1,44 +1,7 @@
 #include "channels.h"
 
 
-//limits the amount of data that can be forward-sent
-int32_t cwnd = IW;
-//the server's segment window
-int32_t rwnd = RWIN;
-//sequence number (in bytes) for the highest acknowledged packet
-int32_t max_ackd_num = 1;
-//sequence number (in bytes) for the highest packet which *could* be sent/forward-sent, controlled by congestion and receiver windows
-int32_t max_send_num;
-//sequence number (in bytes) for the highest packet which has ever been sent
-int32_t highest_sent_num = 1;
-//sequence number (in bytes) for the most recent packet sent
-int32_t last_sent_num = 1;
-//amount of data sent but not acknowledged/accounted for
-int32_t flight_size = 0;
-//set to flight_size when a duplicate ACK is first received, used for controlling fast recovery flow
-int32_t old_flight_size = 0;
-//determine whether to use slow_start or congestion_avoidance in sending data
-int32_t ssthresh;
-//number of newly ACKDs bytes since the last time data was sent
-int32_t newly_ackd_num = 0;
-/*//old round trip time estimation used for triguring retransmission
-int32_t old_rtt = 0;
-//new round trip time estimation used for triguring retransmission
-int32_t new_rtt = 0;
-//constant used for recalculating rtt estimation
-double alpha_rtt = 0.875;
-//sample of rtt
-int32_t sample_rtt = 0;*/
-//current system state
-int32_t system_state = SLOWSTART;
-//keep track of how many duplicate packets are received for retransmission
-int32_t dupd_packets_recvd = 0;
-//value limiting the number of duplicate ACKs before intervening
-int32_t dupd_packet_limit = 3;
-//set to the most recently receieved ACK value
-int32_t this_ack_num = 1;
-//set to the previously received ACK value, used for detecting shift out of duplicated ACK performance
-int32_t prev_ack_num = 1;
+
 
 
 
@@ -77,8 +40,44 @@ void *send_channel(void *arg)
 	total_stats.bytes_dropped = 0;
 	total_stats.bytes_timedout = 0;
 
-	//set ssthresh
+	//limits the amount of data that can be forward-sent
+	cwnd = IW;
+	//the server's segment window
+	rwnd = RWIN;
+	//sequence number (in bytes) for the highest acknowledged packet
+	max_ackd_num = 1;
+	//sequence number (in bytes) for the highest packet which *could* be sent/forward-sent, controlled by congestion and receiver windows
+	max_send_num = max_ackd_num + min(cwnd, rwnd);;
+	//sequence number (in bytes) for the highest packet which has ever been sent
+	highest_sent_num = 1;
+	//sequence number (in bytes) for the most recent packet sent
+	last_sent_num = 1;
+	//amount of data sent but not acknowledged/accounted for
+	flight_size = 0;
+	//set to flight_size when a duplicate ACK is first received, used for controlling fast recovery flow
+	old_flight_size = 0;
+	//determine whether to use slow_start or congestion_avoidance in sending data
 	ssthresh = rwnd;
+	//number of newly ACKDs bytes since the last time data was sent
+	newly_ackd_num = 0;
+	/*//old round trip time estimation used for triguring retransmission
+	old_rtt = 0;
+	//new round trip time estimation used for triguring retransmission
+	new_rtt = 0;
+	//constant used for recalculating rtt estimation
+	double alpha_rtt = 0.875;
+	//sample of rtt
+	sample_rtt = 0;*/
+	//current system state
+	system_state = SLOWSTART;
+	//keep track of how many duplicate packets are received for retransmission
+	dupd_packets_recvd = 0;
+	//value limiting the number of duplicate ACKs before intervening
+	dupd_packet_limit = 3;
+	//set to the most recently receieved ACK value
+	this_ack_num = 1;
+	//set to the previously received ACK value, used for detecting shift out of duplicated ACK performance
+	prev_ack_num = 1;
 
 	/*
 		send data packets to server
@@ -156,9 +155,6 @@ void *send_channel(void *arg)
 		//send next packet (or retransmit dropped packet) given there's space in the network and the full file hasn't already been sent
 		if(last_sent_num < max_send_num && last_sent_num < file_size)
 		{
-			printf("cwnd:%d\nssthresh:%d\nflight_size:%d\ndupd_packets:%d\nmax send:%d\nmax ackd:%d\nlast_sent_num:%d\n", 
-				cwnd, ssthresh, flight_size, dupd_packets_recvd, max_send_num, max_ackd_num, last_sent_num);
-			
 			//set the serv and clnt addresses
 			send_req_header.dest_addr = serv_addr[0];
 			send_req_header.src_addr = clnt_addr[0];
@@ -168,7 +164,8 @@ void *send_channel(void *arg)
 			send_size = min(SMSS, file_size-last_sent_num+1);
 			memset(msg_buf, 0, SMSS);
 			strncpy(msg_buf, file_buf+last_sent_num-1, send_size);
-			write_packet(send_req_packet, 0, 1);
+			log_action(send_req_packet, 0, 1);
+			log_packet(send_req_packet, 0);
 
 			//send packet to server
 			status = mp_send(sock_hndls[0], &send_req_packet, send_size, 0);
@@ -193,13 +190,13 @@ void *send_channel(void *arg)
 			if(dupd_packets_recvd == dupd_packet_limit)
 			{
 				last_sent_num = max_send_num;
-				dupd_timed_out = 0;
 			}
 			else
 			{
 				last_sent_num += send_size;
 				highest_sent_num += send_size;
 			}
+			log_state();
 		}
 		pthread_mutex_unlock(&sys_l);
 	}
@@ -265,7 +262,6 @@ void *recv_channel(void *arg)
 			if(dupd_packets_recvd > dupd_packet_limit)
 			{
 				last_sent_num = this_ack_num;
-				dupd_timed_out = 1;
 			}
 			else
 			{
@@ -298,7 +294,8 @@ void *recv_channel(void *arg)
 		{
 			printf("ERRNO: %d\n\n\n\n\n\n\n\n\n", errno);
 		}
-		write_packet(*recv_req_packet, channel_id, 0);
+		log_action(*recv_req_packet, channel_id, 0);
+		log_packet(*recv_req_packet, channel_id);
 
 		//catch an ACK of -1 indicating that transmission has completed
 		if((*recv_req_packet->header).ack_num == -1)
@@ -354,6 +351,7 @@ void *recv_channel(void *arg)
 				newly_ackd_num += SMSS;
 			}
 		}
+		log_state();
 		pthread_mutex_unlock(&sys_l);
 	}
 
