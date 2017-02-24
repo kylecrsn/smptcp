@@ -2,7 +2,6 @@
 
 int main(int argc, char *argv[])
 {
-	bad_state = 0;
 	opterr = 0;
 	transmission_end_sig = 0;
 	int32_t *given_ports;
@@ -51,20 +50,16 @@ int main(int argc, char *argv[])
 	struct mptcp_header *recv_req_header;
 	struct packet send_req_packet;
 	struct packet *recv_req_packet;
-	byte_stats_t *send_stats;
 	send_arg_t *send_args;
 	recv_arg_t *recv_args;
-	ret_t *rets;
 
 	/*
 		initial configuration
 	*/
 
 	pthread_mutex_init(&transmission_end_l, NULL);
-	pthread_mutex_init(&channel_map_l, NULL);
-	pthread_mutex_init(&packets_in_buffer_l, NULL);
-	pthread_mutex_init(&max_ackd_num_l, NULL);
-	pthread_mutex_init(&write_l, NULL);
+	pthread_mutex_init(&log_l, NULL);
+	pthread_mutex_init(&sys_l, NULL);
 	pthread_mutex_lock(&transmission_end_l);
 
 	/*
@@ -328,7 +323,7 @@ int main(int argc, char *argv[])
 	*/
 
 	//timeout value for receiving ACKs, 1 sec == 1000000 usec
-	recv_timeout.tv_sec = 5;
+	recv_timeout.tv_sec = 20;
 	recv_timeout.tv_usec = 0;
 
 	//open sockets for each interface and spawn related recv channel thread
@@ -338,6 +333,7 @@ int main(int argc, char *argv[])
 	channel_clnt_addr = (struct sockaddr_in *)malloc(num_interfaces*sizeof(struct sockaddr_in));
 	channel_serv_addr_len = (socklen_t *)malloc(num_interfaces*sizeof(socklen_t));
 	channel_clnt_addr_len = (socklen_t *)malloc(num_interfaces*sizeof(socklen_t));
+	channel_stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
 	for(i = 0; i < num_interfaces; i++)
 	{
 		//setup channel server sockaddr_in object
@@ -367,6 +363,7 @@ int main(int argc, char *argv[])
 			free(channel_clnt_addr);
 			free(channel_serv_addr_len);
 			free(channel_clnt_addr_len);
+			free(channel_stats);
 
 			return 1;
 		}
@@ -388,6 +385,7 @@ int main(int argc, char *argv[])
 			free(channel_clnt_addr);
 			free(channel_serv_addr_len);
 			free(channel_clnt_addr_len);
+			free(channel_stats);
 
 			return 1;
 		}
@@ -407,6 +405,7 @@ int main(int argc, char *argv[])
 			free(channel_clnt_addr);
 			free(channel_serv_addr_len);
 			free(channel_clnt_addr_len);
+			free(channel_stats);
 
 			return 1;
 		}
@@ -429,6 +428,7 @@ int main(int argc, char *argv[])
 		free(channel_clnt_addr);
 		free(channel_serv_addr_len);
 		free(channel_clnt_addr_len);
+		free(channel_stats);
 
 		return 1;
 	}
@@ -445,18 +445,14 @@ int main(int argc, char *argv[])
 	{
 		//join send channel thread, get back data transfer statistics
 		fflush(stdout);
-		status = pthread_join(send_channel_id, (void **)&rets);
-		send_stats = rets->stats;
-		free(rets);
-		close(send_channel_id);
+		status = pthread_join(send_channel_id, (void **)NULL);
 
 		//join recv channel threads, rets will be NULL for each
 		for(i = 0; i < num_interfaces; i++)
 		{
 			fflush(stdout);
-			pthread_join(recv_channel_ids[i], (void **)&rets);
+			pthread_join(recv_channel_ids[i], (void **)NULL);
 			close(sock_hndls[i]);
-			//pthread_cancel(recv_channel_ids[i]);
 		}
 	}
 	else
@@ -479,38 +475,28 @@ int main(int argc, char *argv[])
 		free(channel_clnt_addr);
 		free(channel_serv_addr_len);
 		free(channel_clnt_addr_len);
+		free(channel_stats);
 
 		return 1;
 	}
 
 	//Report data transfer statistics
-	fprintf(stdout, "\nData Transfer Statistics\n========================\n");
-	fprintf(stdout, "Total Bytes Sent    : %d\n", 
-		total_send_stats.bytes_sent);
-	fprintf(stdout, "Total Bytes Dropped : %d\n", 
-		total_send_stats.bytes_dropped);
-	fprintf(stdout, "Total Bytes Resent  : %d\n\n", 
-		total_send_stats.bytes_resent);
+	fprintf(stdout, "\nData Transfer Statistics\n=========================\n");
+	fprintf(stdout, "Total Bytes Sent       : %d\n", 
+		total_stats.bytes_sent);
+	fprintf(stdout, "Bytes Dropped/Resent   : %d\n", 
+		total_stats.bytes_dropped);
+	fprintf(stdout, "Bytes Timed Out/Resent : %d\n\n", 
+		total_stats.bytes_timedout);
 	for(i = 0; i < num_interfaces; i++)
 	{
-		fprintf(stdout, "Data Channel %d\n==============", i);
-		if(i > 10)
-		{
-			fprintf(stdout, "=");
-		}
-		fprintf(stdout, "\n");
-		fprintf(stdout, "Bytes Sent    : %d\n", 
-			send_stats[i].bytes_sent);
-		fprintf(stdout, "Bytes Dropped : %d\n", 
-			send_stats[i].bytes_dropped);
-		fprintf(stdout, "Bytes Resent  : %d\n\n", 
-			send_stats[i].bytes_resent);
-	}
-
-	if(bad_state > 0)
-	{
-		fprintf(stdout, "Number of Bad State entries: %d\n", 
-			bad_state);
+		fprintf(stdout, "Data Channel %d\n===============\n", i);
+		fprintf(stdout, "Total Bytes Sent       : %d\n", 
+			channel_stats[i].bytes_sent);
+		fprintf(stdout, "Bytes Dropped/Resent   : %d\n", 
+			channel_stats[i].bytes_dropped);
+		fprintf(stdout, "Bytes Timed Out/Resent : %d\n\n", 
+			channel_stats[i].bytes_timedout);
 	}
 
 	/*
@@ -525,6 +511,7 @@ int main(int argc, char *argv[])
 	free(channel_clnt_addr);
 	free(channel_serv_addr_len);
 	free(channel_clnt_addr_len);
+	free(channel_stats);
 
 	return ret;
 }

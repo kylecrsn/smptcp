@@ -1,31 +1,58 @@
 #include "channels.h"
 
+
+//limits the amount of data that can be forward-sent
+int32_t cwnd = IW;
+//the server's segment window
+int32_t rwnd = RWIN;
+//sequence number (in bytes) for the highest acknowledged packet
+int32_t max_ackd_num = 1;
+//sequence number (in bytes) for the highest packet which *could* be sent/forward-sent, controlled by congestion and receiver windows
+int32_t max_send_num;
+//sequence number (in bytes) for the highest packet which has ever been sent
+int32_t highest_sent_num = 1;
+//sequence number (in bytes) for the most recent packet sent
+int32_t last_sent_num = 1;
+//amount of data sent but not acknowledged/accounted for
+int32_t flight_size = 0;
+//set to flight_size when a duplicate ACK is first received, used for controlling fast recovery flow
+int32_t old_flight_size = 0;
+//determine whether to use slow_start or congestion_avoidance in sending data
+int32_t ssthresh;
+//number of newly ACKDs bytes since the last time data was sent
+int32_t newly_ackd_num = 0;
+/*//old round trip time estimation used for triguring retransmission
+int32_t old_rtt = 0;
+//new round trip time estimation used for triguring retransmission
+int32_t new_rtt = 0;
+//constant used for recalculating rtt estimation
+double alpha_rtt = 0.875;
+//sample of rtt
+int32_t sample_rtt = 0;*/
+//current system state
+int32_t system_state = SLOWSTART;
+//keep track of how many duplicate packets are received for retransmission
+int32_t dupd_packets_recvd = 0;
+//value limiting the number of duplicate ACKs before intervening
+int32_t dupd_packet_limit = 3;
+//set to the most recently receieved ACK value
+int32_t this_ack_num = 1;
+//set to the previously received ACK value, used for detecting shift out of duplicated ACK performance
+int32_t prev_ack_num = 1;
+
+
+
 void *send_channel(void *arg)
 {
 	int32_t i;
 	int32_t status;
 	int32_t send_size;
-	char msg_buf[MSS];
+	char msg_buf[SMSS];
 	struct sockaddr_in *serv_addr;
 	struct sockaddr_in *clnt_addr;
 	struct mptcp_header send_req_header;
 	struct packet send_req_packet;
 	send_arg_t *args = (send_arg_t *)arg;
-	ret_t *rets = (ret_t *)malloc(sizeof(ret_t));
-
-
-
-	channel_map = (packet_state_t *)malloc(num_interfaces*sizeof(packet_state_t));
-	for(i = 0; i < num_interfaces; i++)
-	{
-		channel_map[i].id = 0;
-		channel_map[i].state = NEW;
-	}
-	max_ackd_num = 1;
-	packets_in_buffer = 0;
-	int32_t channel_select;
-
-
 
 	/*
 		initial configuration
@@ -37,19 +64,21 @@ void *send_channel(void *arg)
 	clnt_addr = args->clnt_addr;
 	free(args);
 
-	//initialize rets
-	rets->stats = (byte_stats_t *)malloc(num_interfaces*sizeof(byte_stats_t));
+	//initialize channel_stats
 	for(i = 0; i < num_interfaces; i++)
 	{
-		rets->stats[i].bytes_sent = 0;
-		rets->stats[i].bytes_dropped = 0;
-		rets->stats[i].bytes_resent = 0;
+		channel_stats[i].bytes_sent = 0;
+		channel_stats[i].bytes_dropped = 0;
+		channel_stats[i].bytes_timedout = 0;
 	}
 
-	//intitialize total_send_stats
-	total_send_stats.bytes_sent = 0;
-	total_send_stats.bytes_dropped = 0;
-	total_send_stats.bytes_resent = 0;
+	//intitialize total_stats
+	total_stats.bytes_sent = 0;
+	total_stats.bytes_dropped = 0;
+	total_stats.bytes_timedout = 0;
+
+	//set ssthresh
+	ssthresh = rwnd;
 
 	/*
 		send data packets to server
@@ -61,87 +90,130 @@ void *send_channel(void *arg)
 	send_req_packet.header = &send_req_header;
 	send_req_packet.data = msg_buf;
 
-	//continue as long as the end_of_transmiison sig hasn't been changed by some recv channel thread
 	while(transmission_end_sig == 0)
 	{
-		//run state machine over channel_map
-		channel_select = -1;
-		pthread_mutex_lock(&channel_map_l);
-		for(i = 0; i < num_interfaces; i++)
+		pthread_mutex_lock(&sys_l);
+		//make sure transmission didn't finish while waiting to obtain the lock
+		if(transmission_end_sig != 0)
 		{
-			switch(channel_map[i].state)
+			pthread_mutex_unlock(&sys_l);
+			break;
+		}
+
+		//update system state
+		if(system_state != FASTRR)
+		{
+			if(cwnd < ssthresh)
 			{
-				case NEW:
-				{
-					if(channel_select == -1)
-					{
-						channel_select = i;
-						channel_map[i].state = SENT;
-					}
-					break;
-				}
-				case SENT:
-				{
-					break;
-				}
-				case TIMEDOUT:
-				{
-					if(channel_select == -1)
-					{
-						channel_select = i;
-						channel_map[i].state = SENT;
-					}
-					break;
-				}
+				system_state = SLOWSTART;
+			}
+			else
+			{
+				system_state = CONGESTAVOID;
 			}
 		}
-		pthread_mutex_lock(&packets_in_buffer_l);
-		if(packets_in_buffer > 7 || channel_select == -1)
+
+		//run over state machine to determine whether or not to send a packet and how to update state variables
+		switch(system_state)
 		{
-			pthread_mutex_unlock(&packets_in_buffer_l);
-			pthread_mutex_unlock(&channel_map_l);
-			continue;
+			case SLOWSTART:
+			{
+				//increase cwnd by the number of newly received ACKs
+				cwnd += newly_ackd_num;
+				newly_ackd_num = 0;
+				break;
+			}
+			case CONGESTAVOID:
+			{
+				//increase cwnd by the number of newly received ACKs
+				//note once per rtt, so 2.5-5 sec
+				//note: can also do cwnd += (int32_t)ceil(SMSS*((double)SMSS/cwnd))
+				if(newly_ackd_num >= cwnd)
+				{
+					cwnd += SMSS;
+					newly_ackd_num = 0;
+				}
+				break;
+			}
+			case FASTRR:
+			{
+				//once the dropped packet has been retransmitted, restore the last_sent_num value to temporarily cap off any further transmission
+				if(dupd_packets_recvd == dupd_packet_limit+1)
+				{
+					last_sent_num = max_ackd_num + min(cwnd, rwnd);
+				}
+
+				//increase cwnd each time a remaining dup ACK is received after flight_size < (old_flight_size/2)-SMSS
+				cwnd += newly_ackd_num;
+				newly_ackd_num = 0;
+				break;
+			}
 		}
-		pthread_mutex_unlock(&packets_in_buffer_l);
 
-		//set the serv and clnt addresses
-		send_req_header.dest_addr = serv_addr[channel_select];
-		send_req_header.src_addr = clnt_addr[channel_select];
+		//update max_send_num to reflect new network conditions
+		max_send_num = max_ackd_num + min(cwnd, rwnd);
 
-		//assemble request packet
-		send_req_header.seq_num = channel_map[channel_select].id*MSS + 1;
-		send_size = min(MSS, file_size-(channel_map[channel_select].id*MSS));
-		memset(msg_buf, 0, MSS);
-		strncpy(msg_buf, file_buf+(channel_map[channel_select].id*MSS), send_size);
-		write_packet(send_req_packet, channel_select, 1);
-		pthread_mutex_unlock(&channel_map_l);
-
-		//send packet to server
-		status = mp_send(sock_hndls[channel_select], &send_req_packet, send_size, 0);
-		pthread_mutex_lock(&packets_in_buffer_l);
-		packets_in_buffer++;
-		pthread_mutex_unlock(&packets_in_buffer_l);
-		if(status != send_size)
+		//send next packet (or retransmit dropped packet) given there's space in the network and the full file hasn't already been sent
+		if(last_sent_num < max_send_num && last_sent_num < file_size)
 		{
-			fprintf(stderr, "%s did not send full packet size to server from data channel %d (bytes: %d/%d)\n", 
-					err_m, channel_select, status, send_size);
+			printf("cwnd:%d\nssthresh:%d\nflight_size:%d\ndupd_packets:%d\nmax send:%d\nmax ackd:%d\nlast_sent_num:%d\n", 
+				cwnd, ssthresh, flight_size, dupd_packets_recvd, max_send_num, max_ackd_num, last_sent_num);
+			
+			//set the serv and clnt addresses
+			send_req_header.dest_addr = serv_addr[0];
+			send_req_header.src_addr = clnt_addr[0];
 
-			pthread_mutex_unlock(&transmission_end_l);
-			pthread_exit((void *)rets);
+			//assemble request packet
+			send_req_header.seq_num = last_sent_num;
+			send_size = min(SMSS, file_size-last_sent_num+1);
+			memset(msg_buf, 0, SMSS);
+			strncpy(msg_buf, file_buf+last_sent_num-1, send_size);
+			write_packet(send_req_packet, 0, 1);
+
+			//send packet to server
+			status = mp_send(sock_hndls[0], &send_req_packet, send_size, 0);
+			if(status != send_size)
+			{
+				pthread_mutex_lock(&log_l);
+				fprintf(stderr, "%s did not send full packet size to server from data channel %d (bytes: %d/%d), please restart transmission\n", 
+						err_m, 0, status, send_size);
+				pthread_mutex_unlock(&log_l);
+
+				pthread_mutex_unlock(&sys_l);
+				pthread_mutex_unlock(&transmission_end_l);
+				break;
+			}
+
+			//update bytes sent values
+			channel_stats[0].bytes_sent += send_size;
+			total_stats.bytes_sent += send_size;
+			flight_size += send_size;
+
+			//if the duplicate limit has been met or a partial ack was received
+			if(dupd_packets_recvd == dupd_packet_limit)
+			{
+				last_sent_num = max_send_num;
+				dupd_timed_out = 0;
+			}
+			else
+			{
+				last_sent_num += send_size;
+				highest_sent_num += send_size;
+			}
 		}
-
-		//update bytes sent values
-		rets->stats[channel_select].bytes_sent += send_size;
-		total_send_stats.bytes_sent += send_size;
+		pthread_mutex_unlock(&sys_l);
 	}
 
-	free(channel_map);
-	pthread_exit((void *)rets);
+	pthread_exit((void *)NULL);
+
+
+/*	//recalculate rtt estimation
+	old_rtt = new_rtt;
+	new_rtt = (alpha_rtt * old_rtt) + (sample_rtt * (1 - alpha_rtt));*/
 }
 
 void *recv_channel(void *arg)
 {
-	int32_t i;
 	int32_t channel_id;
 	char *recv_req_data;
 	struct mptcp_header *recv_req_header;
@@ -164,84 +236,128 @@ void *recv_channel(void *arg)
 	//allocate space for recv packet
 	recv_req_packet = (struct packet *)malloc(sizeof(struct packet));
 	recv_req_header = (struct mptcp_header *)malloc(sizeof(struct mptcp_header));
-	recv_req_data = (char *)malloc(MSS*sizeof(char));
+	recv_req_data = (char *)malloc(SMSS*sizeof(char));
 	recv_req_packet->header = recv_req_header;
 	recv_req_packet->data = recv_req_data;
 
 	while(transmission_end_sig == 0)
 	{
-		//receive ACK back
+		//receive packet
 		errno = 0;
 		(*recv_req_packet->header).ack_num = 0;
 		mp_recv(sock_hndls[channel_id], recv_req_packet, 0, 0);
-		pthread_mutex_unlock(&packets_in_buffer_l);
-		packets_in_buffer--;
-		pthread_mutex_unlock(&packets_in_buffer_l);
-		if(transmission_end_sig == 1)
+
+		pthread_mutex_lock(&sys_l);
+		//make sure transmission didn't finish while waiting to obtain the lock
+		if(transmission_end_sig != 0)
 		{
+			pthread_mutex_unlock(&sys_l);
 			break;
 		}
+		flight_size -= SMSS;
 
-		//mp_recv timed-out as set by setsockopt from the main thread
+		//if errno is EAGAIN, then the mp_recv function has timed out
 		if(errno == EAGAIN)
 		{
-			pthread_mutex_lock(&write_l);
+			//segment loss due to retransmission clock timing out, use multiplicative decrease
+			//ssthresh = max(flight_size/2, 2*SMSS);
+			//cwnd = LW;
+			if(dupd_packets_recvd > dupd_packet_limit)
+			{
+				last_sent_num = this_ack_num;
+				dupd_timed_out = 1;
+			}
+			else
+			{
+				last_sent_num -= SMSS;
+			}
+			channel_stats[channel_id].bytes_timedout += SMSS;
+			total_stats.bytes_timedout += SMSS;
+
+			pthread_mutex_lock(&log_l);
 			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d REQUEST TIMED OUT, RESENDING\n\n", 
-				channel_id, (int32_t)ceil((double)max_ackd_num/MSS));
-			pthread_mutex_unlock(&write_l);
-			pthread_mutex_lock(&channel_map_l);
-			channel_map[channel_id].state = TIMEDOUT;
-			pthread_mutex_unlock(&channel_map_l);
+				channel_id, (int32_t)ceil((double)max_ackd_num/SMSS));
+			pthread_mutex_unlock(&log_l);
+
+			pthread_mutex_unlock(&sys_l);
 			continue;
 		}
+		//if errno is ECONNREFUSED, an error is assumed to have occurred on the server, causing it to prematurely close the connection
+		else if(errno == ECONNREFUSED)
+		{
+			pthread_mutex_lock(&log_l);
+			fprintf(stderr, "%s an error occurred on the server causing the connection to close on channel %d, please restart transmission\n", 
+				err_m, channel_id);
+			pthread_mutex_unlock(&log_l);
 
-		//catch an ACK of -1 indicating the transmission has completed
+			pthread_mutex_unlock(&sys_l);
+			pthread_mutex_unlock(&transmission_end_l);
+			break;
+		}
+		else if(errno != 0)
+		{
+			printf("ERRNO: %d\n\n\n\n\n\n\n\n\n", errno);
+		}
+		write_packet(*recv_req_packet, channel_id, 0);
+
+		//catch an ACK of -1 indicating that transmission has completed
 		if((*recv_req_packet->header).ack_num == -1)
 		{
-			pthread_mutex_lock(&channel_map_l);
-			write_packet(*recv_req_packet, channel_id, 0);
 			transmission_end_sig = 1;
-			pthread_mutex_unlock(&channel_map_l);
+			pthread_mutex_unlock(&sys_l);
 			pthread_mutex_unlock(&transmission_end_l);
 			break;
 		}
 
-		if((*recv_req_packet->header).ack_num > max_ackd_num)
+		//asign ACK number state variables
+		prev_ack_num = this_ack_num;
+		this_ack_num = (*recv_req_packet->header).ack_num;
+
+		//received acknowledgment for previously unacknowledged data
+		if(this_ack_num > prev_ack_num)
 		{
-			pthread_mutex_lock(&channel_map_l);
-			switch(channel_map[channel_id].state)
+			//deflate cwnd and reset any dup* state variables once a new ACK is received after a period of duplicate ACKs
+			if(dupd_packets_recvd >= dupd_packet_limit)
 			{
-				case SENT:
-				{
-					max_ackd_num = (*recv_req_packet->header).ack_num;
-					for(i = 0; i < num_interfaces; i++)
-					{
-						channel_map[i].id++;
-						channel_map[i].state = NEW;
-					}
-					break;
-				}
-				default:
-				{
-					fprintf(stdout, "\n\n\n\n\n\n\n\n[CHANNEL %d]: RECV PACKET %d ENETERED SWITCH FROM BAD STATE\n\n\n\n\n\n\n\n", 
-						channel_id, max_ackd_num/MSS);
-					printf("this: %d max: %d\n", (*recv_req_packet->header).ack_num, max_ackd_num);
-					bad_state++;
-					break;
-				}
+				//flight_size is already old_flight_size/2, no need to divide by 2 again
+				ssthresh = max(flight_size+SMSS, 2*SMSS);
+				cwnd = ssthresh;
+				dupd_packets_recvd = 0;
+				system_state = RESET;
 			}
-			write_packet(*recv_req_packet, channel_id, 0);
-			pthread_mutex_unlock(&channel_map_l);
+			newly_ackd_num += SMSS;
+			max_ackd_num = this_ack_num;
 		}
+		//received duplicate acknowledgment
 		else
 		{
-			pthread_mutex_lock(&write_l);
-			fprintf(stdout, "[CHANNEL %d]: RECV PACKET %d DUPLICATE ACK FROM PREVIOUS REQUEST\n\n", 
-				channel_id, max_ackd_num/MSS);
-			pthread_mutex_unlock(&write_l);
+			//first duplicate ACK, decrement one packet from flight size for the dropped packet and store old flight size
+			if(dupd_packets_recvd == 0)
+			{
+				system_state = FASTRR;
+				old_flight_size = flight_size+SMSS;
+				flight_size -= SMSS;
+				channel_stats[channel_id].bytes_dropped += SMSS;
+				total_stats.bytes_dropped += SMSS;
+			}
+			dupd_packets_recvd++;
+
+			//reset ssthresh when the number of duplicate ACKs hits dupd_packet_limit
+			if(dupd_packets_recvd == dupd_packet_limit)
+			{
+				last_sent_num = this_ack_num;
+			}
+
+			//can now begin transmitting unsent packets
+			if(flight_size <= (old_flight_size/2)-SMSS)
+			{
+				newly_ackd_num += SMSS;
+			}
 		}
+		pthread_mutex_unlock(&sys_l);
 	}
 
+	//cleanup and exit
 	free(recv_req_packet);
 	free(recv_req_header);
 	free(recv_req_data);

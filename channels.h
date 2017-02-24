@@ -14,10 +14,6 @@ typedef struct recv_arg_t
 {
 	int32_t channel_id;
 }recv_arg_t;
-typedef struct ret_t
-{
-	byte_stats_t *stats;
-}ret_t;
 
 /*functions*/
 void *send_channel(void *arg);

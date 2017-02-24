@@ -45,13 +45,22 @@ int32_t min(int32_t a, int32_t b)
 	return b;
 }
 
+int32_t max(int32_t a, int32_t b)
+{
+	if(a >= b)
+	{
+		return a;
+	}
+	return b;
+}
+
 void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 {
-	int32_t i;
+	//int32_t i;
 	char tmp[INET_ADDRSTRLEN];
 
 	//obtain write lock
-	pthread_mutex_lock(&write_l);
+	pthread_mutex_lock(&log_l);
 
 	//print log header
 	if(channel_id > -1)
@@ -95,7 +104,7 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	//print log body of packet info
 	fprintf(stdout, "====================================\n");
 
-	//print out packet map state
+/*	//print out packet map state
 	if(channel_id > -1)
 	{
 		printf("| channel_map[");
@@ -104,7 +113,7 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 			printf("(%d, %d), ", channel_map[i].id+1, channel_map[i].state);
 		}
 		printf("(%d, %d)]\n", channel_map[i].id+1, channel_map[i].state);
-	}
+	}*/
 
 	inet_ntop((*pkt.header).dest_addr.sin_family, &((*pkt.header).dest_addr.sin_addr), tmp, INET_ADDRSTRLEN);
 	fprintf(stdout, "| dest_addr   : %s\n", 
@@ -127,5 +136,5 @@ void write_packet(struct packet pkt, int32_t channel_id, int32_t isSend)
 	fprintf(stdout, "====================================\n\n");
 	
 	//release write lock
-	pthread_mutex_unlock(&write_l);
+	pthread_mutex_unlock(&log_l);
 }
