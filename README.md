@@ -8,7 +8,9 @@ This program utilizes both traditional TCP protcol features (slow start, congest
 - The program requires both pthreads and the server-interface library. To build the project, simply run make, with the ouput executable being "smptcp"
 - At the comand line, the program can be excuted by running:
 
+```sh
 [user@computer]$ ./smptcp [-h hostname] [-p port] [-f filename] [-n num_interfaces]
+```
 
 - An additional useful command includes inserting "time" before "./smptcp" to get some timing metrics for the client's performance
 
@@ -25,5 +27,7 @@ The program includes verbose logging which consists of the actions take by the p
 
 ## References
 (1) [RFC5681: TCP Congestion Control](https://tools.ietf.org/html/rfc5681)
+
 (2) [RFC6824: Coupled Congestion Control for Multipath Transport Protocols](https://tools.ietf.org/html/rfc6824)
+
 (3) [TCP Reno and Congestion Management](http://intronetworks.cs.luc.edu/current/html/reno.html)
