@@ -327,6 +327,10 @@ void *recv_channel(void *arg)
 		prev_ack_num = this_ack_num;
 		this_ack_num = (*recv_req_packet->header).ack_num;
 		flight_size -= SMSS;
+		if(flight_size < 0)
+		{
+			flight_size = 0;
+		}
 
 		//received acknowledgment for previously unacknowledged data
 		if(this_ack_num > prev_ack_num)
