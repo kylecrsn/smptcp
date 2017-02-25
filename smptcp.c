@@ -328,7 +328,7 @@ int main(int argc, char *argv[])
 	*/
 
 	//timeout value for receiving ACKs, 1 sec == 1000000 usec
-	recv_timeout.tv_sec = 20;
+	recv_timeout.tv_sec = 10;
 	recv_timeout.tv_usec = 0;
 
 	//open sockets for each interface and spawn related recv channel thread

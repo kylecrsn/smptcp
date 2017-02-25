@@ -122,7 +122,7 @@ void log_packet(struct packet pkt, int32_t channel_id)
 	fprintf(stdout, "| ack_num     : %d\n", (*pkt.header).ack_num);
 	fprintf(stdout, "| total_bytes : %d\n", (*pkt.header).total_bytes);
 	fprintf(stdout, "| data        : %s\n", pkt.data);
-	fprintf(stdout, "====================================\n\n");
+	fprintf(stdout, "====================================\n");
 	
 	//release log lock
 	pthread_mutex_unlock(&log_l);
@@ -130,26 +130,32 @@ void log_packet(struct packet pkt, int32_t channel_id)
 
 void log_state()
 {
+	int32_t i;
+
 	//obtain log lock
 	pthread_mutex_lock(&log_l);
 
 	fprintf(stdout, "== SYSTEM STATE ====================\n");
-	fprintf(stdout, "| cwnd               : %d\n", cwnd);
-	fprintf(stdout, "| rwnd               : %d\n", rwnd);
-	fprintf(stdout, "| max_ackd_num       : %d\n", max_ackd_num);
-	fprintf(stdout, "| max_send_num       : %d\n", max_send_num);
-	fprintf(stdout, "| highest_sent_num   : %d\n", highest_sent_num);
-	fprintf(stdout, "| last_sent_num      : %d\n", last_sent_num);
-	fprintf(stdout, "| flight_size        : %d\n", flight_size);
-	fprintf(stdout, "| old_flight_size    : %d\n", old_flight_size);
-	fprintf(stdout, "| ssthresh           : %d\n", ssthresh);
-	fprintf(stdout, "| newly_ackd_num     : %d\n", newly_ackd_num);
-	fprintf(stdout, "| system_state       : %d\n", system_state);
-	fprintf(stdout, "| dupd_packets_recvd : %d\n", dupd_packets_recvd);
-	fprintf(stdout, "| dupd_packet_limit  : %d\n", dupd_packet_limit);
-	fprintf(stdout, "| this_ack_num       : %d\n", this_ack_num);
-	fprintf(stdout, "| prev_ack_num       : %d\n", this_ack_num);
-	fprintf(stdout, "====================================\n\n");
+	fprintf(stdout, "| cwnd_total              : %d\n", cwnd_total);
+	for(i = 0; i < num_interfaces; i++)
+	{
+		fprintf(stdout, "| channel_wnd[%d].cwnd     : %d\n", i, channel_wnd[i].cwnd);
+		fprintf(stdout, "| channel_wnd[%d].ssthresh : %d\n", i, channel_wnd[i].ssthresh);
+	}
+	fprintf(stdout, "| rwnd                    : %d\n", rwnd);
+	fprintf(stdout, "| max_ackd_num            : %d\n", max_ackd_num);
+	fprintf(stdout, "| max_send_num            : %d\n", max_send_num);
+	fprintf(stdout, "| last_sent_num           : %d\n", last_sent_num);
+	fprintf(stdout, "| flight_size             : %d\n", flight_size);
+	fprintf(stdout, "| old_flight_size         : %d\n", old_flight_size);
+	fprintf(stdout, "| ssthresh                : %d\n", ssthresh);
+	fprintf(stdout, "| newly_ackd_num          : %d\n", newly_ackd_num);
+	fprintf(stdout, "| system_state            : %d\n", system_state);
+	fprintf(stdout, "| dupd_packets_recvd      : %d\n", dupd_packets_recvd);
+	fprintf(stdout, "| dupd_packet_limit       : %d\n", dupd_packet_limit);
+	fprintf(stdout, "| this_ack_num            : %d\n", this_ack_num);
+	fprintf(stdout, "| prev_ack_num            : %d\n", prev_ack_num);
+	fprintf(stdout, "====================================\n\n\n");
 
 	//release log lock
 	pthread_mutex_unlock(&log_l);
